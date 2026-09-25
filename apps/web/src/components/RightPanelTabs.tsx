@@ -15,6 +15,7 @@ import type {
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
   Bot,
+  LibraryBig,
   Smartphone,
   ChevronDown,
   ChevronLeft,
@@ -123,6 +124,8 @@ interface RightPanelTabsProps {
   onAddPullRequests: () => void;
   onAddAgents: () => void;
   onAddDevice: () => void;
+  /** HQ Rooms spike: absent hides the Shelf entry. */
+  onAddShelf?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -326,6 +329,8 @@ function RightPanelEmptyState(props: {
   onAddPullRequests: () => void;
   onAddAgents: () => void;
   onAddDevice: () => void;
+  /** HQ Rooms spike: absent hides the Shelf entry. */
+  onAddShelf?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -402,6 +407,15 @@ function RightPanelEmptyState(props: {
       disabledReason: SURFACE_UNAVAILABLE_HINTS.agents,
       onClick: props.onAddAgents,
       badgeCount: props.liveAgentCount,
+    },
+    {
+      label: "Shelf",
+      icon: LibraryBig,
+      shortcut: "S",
+      available: props.onAddShelf !== undefined,
+      disabledReason: "The shelf is only available from a thread.",
+      onClick: props.onAddShelf ?? (() => {}),
+      badgeCount: 0,
     },
     {
       label: "Device",
@@ -630,6 +644,8 @@ function surfaceTitle(
       return "Pull requests";
     case "agents":
       return "Agents";
+    case "shelf":
+      return "Shelf";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -715,6 +731,8 @@ function SurfaceIcon({
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
     case "agents":
       return <Bot className="size-3 shrink-0" />;
+    case "shelf":
+      return <LibraryBig className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -924,6 +942,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
       onClick: props.onAddAgents,
+    },
+    {
+      label: "Shelf",
+      icon: LibraryBig,
+      shortcut: "S",
+      available: props.onAddShelf !== undefined,
+      disabledReason: "The shelf is only available from a thread.",
+      onClick: props.onAddShelf ?? (() => {}),
     },
     {
       label: "Device",
@@ -1416,6 +1442,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequests={props.onAddPullRequests}
             onAddAgents={props.onAddAgents}
             onAddDevice={props.onAddDevice}
+            onAddShelf={props.onAddShelf}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
