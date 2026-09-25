@@ -2682,22 +2682,6 @@ export default function Sidebar() {
     threadSortOrder,
     threads,
   ]);
-  // Room chip counts respect the project scope but not the room selection itself.
-  const hqVisibleThreadIds = useMemo(
-    () =>
-      new Set(
-        threads
-          .filter(
-            (thread) =>
-              thread.archivedAt === null &&
-              (scopedProjectKeys === null ||
-                scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
-          )
-          .map((thread) => thread.id as string),
-      ),
-    [scopedProjectKeys, threads],
-  );
-
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
@@ -4635,7 +4619,7 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
-            <HqRoomBar visibleThreadIds={hqVisibleThreadIds} />
+            <HqRoomBar />
           </SidebarGroup>
         }
       >

@@ -1,15 +1,28 @@
 // HQ Rooms spike: rooms come from the local HQ app (proxied at /hq in dev) and
-// filter the sidebar by thread id. Selection is a local preference.
+// filter the sidebar by thread id. Selection is a local preference; /rooms picks it.
 import type { SidebarThreadSortOrder } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+import { LayoutGridIcon, XIcon } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 
-export type HqRoom = { slug: string; label: string; threadIds: ReadonlySet<string> };
+export type HqRoom = {
+  slug: string;
+  label: string;
+  /** HQ's own attention flags, e.g. "direct-done". */
+  attention: readonly string[];
+  zone: "today" | "backlog" | "permanent";
+  /** Seated (non-lounge) agents. */
+  agents: number;
+  threadIds: ReadonlySet<string>;
+};
 
 type FloorRoom = {
   slug: string;
   label: string;
+  attention?: string[];
+  zone?: HqRoom["zone"];
   desks?: Array<{ threadUrl?: string }>;
   lounge?: Array<{ threadUrl?: string }>;
 };
@@ -31,6 +44,9 @@ export function parseFloorRooms(floor: readonly FloorRoom[]): HqRoom[] {
   return floor.map((room) => ({
     slug: room.slug,
     label: room.label,
+    attention: room.attention ?? [],
+    zone: room.zone ?? "permanent",
+    agents: room.desks?.length ?? 0,
     threadIds: new Set(
       [...(room.desks ?? []), ...(room.lounge ?? [])]
         .map((desk) => desk.threadUrl?.split("/").filter(Boolean).at(-1))
@@ -108,46 +124,39 @@ export function sortThreadsByActivity<T extends ActivityInput>(threads: readonly
   );
 }
 
-const chip =
-  "rounded-md border px-1.5 py-0.5 text-[11px] leading-4 whitespace-nowrap transition-colors";
-const chipOn = "border-primary/60 bg-primary/10 text-foreground";
-const chipOff = "border-border text-muted-foreground hover:text-foreground";
-
-export function HqRoomBar(props: { visibleThreadIds: ReadonlySet<string> }) {
+/** One-line sidebar entry: the current room opens /rooms; sort stays inline. */
+export function HqRoomBar() {
+  const navigate = useNavigate();
   const { rooms: current, selectedSlug } = useHqRooms();
+  const selectedLabel = current.find((room) => room.slug === selectedSlug)?.label ?? selectedSlug;
   const sortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   const updateSettings = useUpdateClientSettings();
   const setSort = (next: SidebarThreadSortOrder) =>
     updateSettings({ sidebarThreadSortOrder: next });
-  const counted = current
-    .map((room) => ({
-      room,
-      count: [...room.threadIds].filter((id) => props.visibleThreadIds.has(id)).length,
-    }))
-    .filter(({ room, count }) => count > 0 || room.slug === selectedSlug);
   return (
-    <div className="flex flex-col gap-1 pt-1.5" data-testid="hq-room-bar">
-      <div className="flex flex-wrap gap-1">
+    <div
+      className="flex items-center gap-1 pt-1.5 text-[11px] text-muted-foreground"
+      data-testid="hq-room-bar"
+    >
+      <button
+        type="button"
+        className="flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-foreground hover:bg-accent"
+        onClick={() => void navigate({ to: "/rooms" })}
+      >
+        <LayoutGridIcon className="size-3 shrink-0" />
+        <span className="truncate">{selectedLabel ?? "All rooms"}</span>
+      </button>
+      {selectedSlug ? (
         <button
           type="button"
-          className={`${chip} ${selectedSlug === null ? chipOn : chipOff}`}
+          aria-label="Show all threads"
+          className="rounded p-0.5 hover:text-foreground"
           onClick={() => selectHqRoom(null)}
         >
-          All threads
+          <XIcon className="size-3" />
         </button>
-        {counted.map(({ room, count }) => (
-          <button
-            key={room.slug}
-            type="button"
-            className={`${chip} ${selectedSlug === room.slug ? chipOn : chipOff}`}
-            onClick={() => selectHqRoom(selectedSlug === room.slug ? null : room.slug)}
-          >
-            {room.label} <span className="opacity-60">{count}</span>
-          </button>
-        ))}
-      </div>
-      <div className="flex gap-1 text-[11px] text-muted-foreground">
-        Sort:
+      ) : null}
+      <span className="ml-auto flex gap-1">
         {(["updated_at", "created_at"] as const).map((order) => (
           <button
             key={order}
@@ -155,10 +164,10 @@ export function HqRoomBar(props: { visibleThreadIds: ReadonlySet<string> }) {
             className={sortOrder === order ? "text-foreground underline" : "hover:text-foreground"}
             onClick={() => setSort(order)}
           >
-            {order === "updated_at" ? "Recent activity" : "Created"}
+            {order === "updated_at" ? "Recent" : "Created"}
           </button>
         ))}
-      </div>
+      </span>
     </div>
   );
 }
