@@ -1,4 +1,4 @@
-// HQ Rooms spike: rooms come from the local HQ app (proxied at /hq in dev) and
+// HQ Rooms: rooms come from the local HQ app (proxied at /hq) and
 // filter the sidebar by thread id. Selection is a local preference; /rooms picks it.
 import type { SidebarThreadSortOrder } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
@@ -124,15 +124,96 @@ export function parseFloorRooms(floor: readonly FloorRoom[]): HqRoom[] {
   }));
 }
 
-async function refresh() {
+export type HqArchivedRoom = { slug: string; title: string; archivedAt: string };
+let archived: readonly HqArchivedRoom[] = [];
+
+async function getHq<T>(path: string): Promise<T | null> {
   try {
-    const response = await fetch("/hq/api/floor", { cache: "no-store" });
-    if (!response.ok) return;
-    rooms = parseFloorRooms(((await response.json()) as { floor: FloorRoom[] }).floor);
-    emit();
+    const response = await fetch(path, { cache: "no-store" });
+    return response.ok ? ((await response.json()) as T) : null;
   } catch {
-    // HQ offline: keep the last rooms rather than flashing an empty bar.
+    return null;
   }
+}
+
+async function refresh() {
+  const [floor, archive] = await Promise.all([
+    getHq<{ floor: FloorRoom[] }>("/hq/api/floor"),
+    getHq<{ archived: HqArchivedRoom[] }>("/hq/api/rooms"),
+  ]);
+  // HQ offline: keep the last rooms rather than flashing an empty bar.
+  if (floor) rooms = parseFloorRooms(floor.floor);
+  if (archive) archived = archive.archived;
+  emit();
+}
+
+async function postHq(path: string, body: unknown): Promise<string> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const result = (await response.json().catch(() => ({}))) as {
+    ok?: boolean;
+    error?: string;
+    said?: string;
+  };
+  if (!response.ok || !result.ok)
+    throw new Error(result.error || `HQ refused (${response.status}).`);
+  return result.said ?? "";
+}
+
+export const HQ_ZONES = ["today", "permanent", "backlog"] as const;
+
+/** The HQ room order after moving one room to the end of a section. */
+export function moveRoomOrder(
+  current: readonly Pick<HqRoom, "slug" | "zone">[],
+  slug: string,
+  zone: HqRoom["zone"],
+): Record<HqRoom["zone"], string[]> {
+  const moved = current.filter((room) => room.slug !== slug);
+  return Object.fromEntries(
+    HQ_ZONES.map((name) => [
+      name,
+      [
+        ...moved.filter((room) => room.zone === name).map((room) => room.slug),
+        ...(name === zone ? [slug] : []),
+      ],
+    ]),
+  ) as Record<HqRoom["zone"], string[]>;
+}
+
+/** Moves a room to another section now; reverts if HQ refuses. */
+export async function moveHqRoom(slug: string, zone: HqRoom["zone"]) {
+  const room = rooms.find((candidate) => candidate.slug === slug);
+  if (!room || room.zone === zone) return;
+  const previous = rooms;
+  const order = moveRoomOrder(rooms, slug, zone);
+  rooms = [...rooms.filter((candidate) => candidate.slug !== slug), { ...room, zone }];
+  emit();
+  try {
+    await postHq("/hq/api/rooms", order);
+  } catch (error) {
+    rooms = previous;
+    emit();
+    throw error;
+  }
+}
+
+export async function archiveHqRoom(slug: string): Promise<string> {
+  const said = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
+    action: "archive",
+    reason: "Archived from the rooms overview",
+  });
+  if (selected === slug) selectHqRoom(null);
+  await refresh();
+  return said;
+}
+
+export async function unarchiveHqRoom(slug: string): Promise<string> {
+  const said = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, { action: "unarchive" });
+  await refresh();
+  return said;
 }
 
 let pollers = 0;
@@ -158,8 +239,14 @@ export function useHqRooms() {
   useHqRoomPolling();
   const current = useSyncExternalStore(subscribe, () => rooms);
   const selectedSlug = useSyncExternalStore(subscribe, () => selected);
+  const archivedRooms = useSyncExternalStore(subscribe, () => archived);
   const selectedRoom = current.find((room) => room.slug === selectedSlug) ?? null;
-  return { rooms: current, selectedSlug, selectedThreadIds: selectedRoom?.threadIds ?? null };
+  return {
+    rooms: current,
+    archivedRooms,
+    selectedSlug,
+    selectedThreadIds: selectedRoom?.threadIds ?? null,
+  };
 }
 
 type ActivityInput = {

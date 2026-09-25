@@ -1,17 +1,22 @@
-// HQ Rooms spike: full main-panel room overview. Picking a room sets the sidebar
-// filter and opens that room's most recently active thread.
+// HQ Rooms: full main-panel room overview. Picking a room sets the sidebar
+// filter and opens that room's most recently active thread. Drag a room to
+// another section or to Archived; both write to HQ.
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo } from "react";
+import { ArchiveIcon } from "lucide-react";
+import { type DragEvent, useEffect, useMemo, useState } from "react";
 
 import { resolveThreadStatusPill } from "../components/Sidebar.logic";
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import {
+  archiveHqRoom,
   HQ_ATTENTION_LABELS,
   type HqRoom,
   hqRoomThreads,
+  moveHqRoom,
   threadActivityMs,
+  unarchiveHqRoom,
   useHqRooms,
   useOpenHqRoom,
 } from "../hqRooms";
@@ -37,12 +42,41 @@ const ZONES = [
   ["backlog", "Backlog"],
   ["permanent", "Permanent"],
 ] as const;
+const ROOM_DRAG = "application/x-hq-room";
 
 function RoomsRouteView() {
   const openRoom = useOpenHqRoom();
   const navigate = useNavigate();
-  const { rooms, selectedSlug } = useHqRooms();
+  const { rooms, archivedRooms, selectedSlug } = useHqRooms();
   const threads = useThreadShells();
+  const [status, setStatus] = useState("");
+  const [over, setOver] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+
+  const act = (work: Promise<string | void>) => {
+    setStatus("");
+    work.then(
+      (said) => setStatus(said || ""),
+      (error: unknown) => setStatus(error instanceof Error ? error.message : String(error)),
+    );
+  };
+  const dropTarget = (name: string, onDrop: (slug: string) => void) => ({
+    onDragOver: (event: DragEvent) => {
+      if (!event.dataTransfer.types.includes(ROOM_DRAG)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setOver(name);
+    },
+    onDragLeave: (event: DragEvent) => {
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(null);
+    },
+    onDrop: (event: DragEvent) => {
+      event.preventDefault();
+      setOver(null);
+      const slug = event.dataTransfer.getData(ROOM_DRAG);
+      if (slug) onDrop(slug);
+    },
+  });
 
   const cards = useMemo(() => {
     const roomCards = rooms.map((room): RoomCard => {
@@ -69,18 +103,15 @@ function RoomsRouteView() {
       threads: allThreads,
       latestMs: allThreads[0] ? threadActivityMs(allThreads[0]) : 0,
     };
-    const shown = roomCards
-      .filter((card) => card.threads.length > 0 || card.agents > 0)
-      .toSorted(
-        (a, b) =>
-          Number(b.attention.length > 0) - Number(a.attention.length > 0) ||
-          b.latestMs - a.latestMs,
-      );
+    const shown = roomCards.toSorted(
+      (a, b) =>
+        Number(b.attention.length > 0) - Number(a.attention.length > 0) || b.latestMs - a.latestMs,
+    );
     return ZONES.map(([zone, title]) => ({
       zone,
       title,
       cards: [...(zone === "today" ? [all] : []), ...shown.filter((card) => card.zone === zone)],
-    })).filter((section) => section.cards.length > 0);
+    }));
   }, [rooms, threads]);
 
   const open = (slug: string | null, thread: SidebarThreadSummary | undefined) => {
@@ -101,12 +132,26 @@ function RoomsRouteView() {
         <WorkspacePageHeader electron={isElectron} className="border-b border-border">
           <span className="text-sm font-medium">Rooms</span>
           <span className="text-xs text-muted-foreground">
-            Open a room for its threads and shelf; it also filters the sidebar. Esc to go back.
+            Open a room for its threads and shelf; it also filters the sidebar. Drag rooms between
+            sections. Esc to go back.
           </span>
+          {status ? (
+            <span role="status" className="ml-auto text-xs text-muted-foreground">
+              {status}
+            </span>
+          ) : null}
         </WorkspacePageHeader>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
           {cards.map((section) => (
-            <div key={section.zone} className="mb-6">
+            <div
+              key={section.zone}
+              className={cn(
+                "-m-2 mb-4 rounded-xl p-2",
+                over === section.zone && "bg-accent/50 ring-1 ring-primary/40",
+              )}
+              data-testid={`hq-rooms-section-${section.zone}`}
+              {...dropTarget(section.zone, (slug) => act(moveHqRoom(slug, section.zone)))}
+            >
               <h2 className="mb-2 text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 {section.title}
               </h2>
@@ -118,11 +163,28 @@ function RoomsRouteView() {
                   <section
                     key={card.slug ?? "all"}
                     className={cn(
-                      "flex flex-col rounded-xl border bg-card/40 text-sm transition-colors hover:border-foreground/30",
+                      "group relative flex flex-col rounded-xl border bg-card/40 text-sm transition-colors hover:border-foreground/30",
                       card.slug === selectedSlug ? "border-primary/60" : "border-border",
                     )}
                     data-testid="hq-room-card"
+                    draggable={card.slug !== null}
+                    onDragStart={(event) => {
+                      if (!card.slug) return;
+                      event.dataTransfer.setData(ROOM_DRAG, card.slug);
+                      event.dataTransfer.effectAllowed = "move";
+                    }}
                   >
+                    {card.slug ? (
+                      <button
+                        type="button"
+                        aria-label={`Archive ${card.label}`}
+                        title="Archive room"
+                        className="absolute top-2 right-2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
+                        onClick={() => act(archiveHqRoom(card.slug!))}
+                      >
+                        <ArchiveIcon className="size-3.5" />
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="flex flex-col gap-1 px-3 pt-3 pb-2 text-left"
@@ -186,9 +248,57 @@ function RoomsRouteView() {
                     </ul>
                   </section>
                 ))}
+                {section.cards.length === 0 ? (
+                  <p className="rounded-xl border border-dashed border-border p-4 text-xs text-muted-foreground">
+                    Drag rooms here
+                  </p>
+                ) : null}
               </div>
             </div>
           ))}
+          <div
+            className={cn(
+              "-m-2 mb-4 rounded-xl p-2",
+              over === "archive" && "bg-accent/50 ring-1 ring-primary/40",
+            )}
+            data-testid="hq-rooms-archived"
+            {...dropTarget("archive", (slug) => act(archiveHqRoom(slug)))}
+          >
+            <button
+              type="button"
+              className="mb-2 flex items-center gap-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase hover:text-foreground"
+              aria-expanded={showArchived}
+              onClick={() => setShowArchived((shown) => !shown)}
+            >
+              <ArchiveIcon className="size-3" />
+              Archived {archivedRooms.length}
+              <span className="font-normal tracking-normal normal-case">
+                {showArchived ? "· hide" : "· show · drop a room here to archive it"}
+              </span>
+            </button>
+            {showArchived ? (
+              <ul className="flex flex-col divide-y divide-border/60 rounded-xl border border-border text-sm">
+                {archivedRooms.map((room) => (
+                  <li key={room.slug} className="flex items-center gap-2 px-3 py-1.5">
+                    <span className="min-w-0 flex-1 truncate">{room.title}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {formatRelativeTimeLabel(room.archivedAt)}
+                    </span>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-md border border-border px-1.5 py-0.5 text-xs hover:bg-accent"
+                      onClick={() => act(unarchiveHqRoom(room.slug))}
+                    >
+                      Unarchive
+                    </button>
+                  </li>
+                ))}
+                {archivedRooms.length === 0 ? (
+                  <li className="px-3 py-1.5 text-xs text-muted-foreground">No archived rooms</li>
+                ) : null}
+              </ul>
+            ) : null}
+          </div>
         </div>
       </div>
     </SidebarInset>

@@ -255,9 +255,9 @@ export default defineConfig(() => {
                   },
                 ]),
               ),
-              // HQ Rooms spike: the local HQ app supplies rooms.
+              // HQ Rooms: the local HQ app supplies rooms. HQ_URL points at an isolated instance.
               "/hq": {
-                target: "http://127.0.0.1:3939",
+                target: process.env.HQ_URL || "http://127.0.0.1:3939",
                 changeOrigin: true,
                 rewrite: (path: string) => path.replace(/^\/hq/, ""),
               },
