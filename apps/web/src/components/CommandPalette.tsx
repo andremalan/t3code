@@ -45,6 +45,7 @@ import {
   ChartNoAxesColumnIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
+  FileTextIcon,
   FolderIcon,
   FolderPlusIcon,
   LayoutGridIcon,
@@ -99,6 +100,7 @@ import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
 import { HQ_ATTENTION_LABELS, hqRoomThreads, useHqRooms, useOpenHqRoom } from "../hqRooms";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -2124,22 +2126,53 @@ function OpenCommandPaletteDialog(props: {
       });
     },
   }));
-  // HQ Rooms spike: picking a room filters the sidebar and opens its latest thread.
+  // HQ Rooms spike: a room opens its page (which filters the sidebar); "All threads"
+  // clears the filter. Shelf documents open in the room page's reader.
   const roomSearchItems: CommandPaletteActionItem[] = [null, ...hqRooms].map((room) => {
-    const roomThreads = hqRoomThreads(room, threads);
     const flags = (room?.attention ?? []).map((flag) => HQ_ATTENTION_LABELS[flag] ?? flag);
     return {
       kind: "action",
       value: `room:${room?.slug ?? "all"}`,
       searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
       title: room?.label ?? "All threads",
-      description: [`${roomThreads.length} threads`, ...flags].join(" · "),
+      description: room
+        ? [
+            `${hqRoomThreads(room, threads).length} threads`,
+            `${room.shelf.length} on shelf`,
+            ...flags,
+          ].join(" · ")
+        : "Clear the room filter",
       icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
-        openHqRoom(room?.slug ?? null, roomThreads[0]);
+        if (room) await navigate({ to: "/rooms/$slug", params: { slug: room.slug } });
+        else openHqRoom(null, hqRoomThreads(null, threads)[0]);
       },
     };
   });
+  const shelfSearchItems: CommandPaletteActionItem[] = hqRooms.flatMap((room) =>
+    room.shelf
+      .filter((entry) => entry.target)
+      .map((entry) => ({
+        kind: "action" as const,
+        value: `shelf:${room.slug}:${entry.target}`,
+        searchTerms: [entry.name, room.label, entry.group, "shelf"],
+        title: entry.name,
+        description: [room.label, entry.group, entry.prStatus].filter(Boolean).join(" · "),
+        ...(entry.ts ? { timestamp: formatRelativeTimeLabel(entry.ts) } : {}),
+        icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          if (entry.target.startsWith("/hq/")) {
+            await navigate({
+              to: "/rooms/$slug",
+              params: { slug: room.slug },
+              search: { doc: entry.target },
+            });
+          } else {
+            window.open(entry.target, "_blank", "noopener,noreferrer");
+          }
+        },
+      })),
+  );
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =
@@ -2162,7 +2195,10 @@ function OpenCommandPaletteDialog(props: {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     settingsSearchItems,
-    roomSearchItems,
+    extraSearchGroups: [
+      { value: "rooms-search", label: "Rooms", items: roomSearchItems },
+      { value: "shelf-search", label: "Shelf", items: shelfSearchItems },
+    ],
     threadSearchItems:
       linkedThreadSearch?.linkedThreads && deferredQuery === linkedThreadSearch.query
         ? buildLinkedThreadActionItems({

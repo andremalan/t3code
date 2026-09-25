@@ -385,8 +385,8 @@ export function filterCommandPaletteGroups(input: {
   isInSubmenu: boolean;
   projectSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   settingsSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
-  /** HQ Rooms spike. */
-  roomSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
+  /** HQ Rooms spike: searched ahead of projects (rooms, shelf). */
+  extraSearchGroups?: ReadonlyArray<CommandPaletteGroup>;
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
   const isActionsFilter = input.query.startsWith(">");
@@ -410,13 +410,7 @@ export function filterCommandPaletteGroups(input: {
 
   const searchableGroups = [...baseGroups];
   if (!input.isInSubmenu && !isActionsFilter) {
-    if (input.roomSearchItems && input.roomSearchItems.length > 0) {
-      searchableGroups.push({
-        value: "rooms-search",
-        label: "Rooms",
-        items: input.roomSearchItems,
-      });
-    }
+    searchableGroups.push(...(input.extraSearchGroups ?? []));
     if (input.projectSearchItems.length > 0) {
       searchableGroups.push({
         value: "projects-search",

@@ -1,6 +1,6 @@
 // HQ Rooms spike: full main-panel room overview. Picking a room sets the sidebar
 // filter and opens that room's most recently active thread.
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 
 import { resolveThreadStatusPill } from "../components/Sidebar.logic";
@@ -28,6 +28,7 @@ type RoomCard = {
   attention: readonly string[];
   zone: HqRoom["zone"];
   agents: number;
+  shelf: number;
   threads: SidebarThreadSummary[];
   latestMs: number;
 };
@@ -39,6 +40,7 @@ const ZONES = [
 
 function RoomsRouteView() {
   const openRoom = useOpenHqRoom();
+  const navigate = useNavigate();
   const { rooms, selectedSlug } = useHqRooms();
   const threads = useThreadShells();
 
@@ -51,6 +53,7 @@ function RoomsRouteView() {
         attention: room.attention,
         zone: room.zone,
         agents: room.agents,
+        shelf: room.shelf.length,
         threads: roomThreads,
         latestMs: roomThreads[0] ? threadActivityMs(roomThreads[0]) : 0,
       };
@@ -62,6 +65,7 @@ function RoomsRouteView() {
       attention: [],
       zone: "today",
       agents: 0,
+      shelf: 0,
       threads: allThreads,
       latestMs: allThreads[0] ? threadActivityMs(allThreads[0]) : 0,
     };
@@ -97,7 +101,7 @@ function RoomsRouteView() {
         <WorkspacePageHeader electron={isElectron} className="border-b border-border">
           <span className="text-sm font-medium">Rooms</span>
           <span className="text-xs text-muted-foreground">
-            Pick a room to filter the sidebar. Esc to go back.
+            Open a room for its threads and shelf; it also filters the sidebar. Esc to go back.
           </span>
         </WorkspacePageHeader>
         <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
@@ -122,7 +126,11 @@ function RoomsRouteView() {
                     <button
                       type="button"
                       className="flex flex-col gap-1 px-3 pt-3 pb-2 text-left"
-                      onClick={() => open(card.slug, card.threads[0])}
+                      onClick={() =>
+                        card.slug
+                          ? void navigate({ to: "/rooms/$slug", params: { slug: card.slug } })
+                          : open(null, card.threads[0])
+                      }
                     >
                       <span className="flex items-center gap-2">
                         <span className="truncate font-medium">{card.label}</span>
@@ -138,6 +146,7 @@ function RoomsRouteView() {
                       <span className="text-xs text-muted-foreground">
                         {card.threads.length} threads
                         {card.agents > 0 ? ` · ${card.agents} seated` : ""}
+                        {card.shelf > 0 ? ` · ${card.shelf} on shelf` : ""}
                         {card.latestMs > 0
                           ? ` · ${formatRelativeTimeLabel(new Date(card.latestMs).toISOString())}`
                           : ""}
