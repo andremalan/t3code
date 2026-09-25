@@ -17,16 +17,83 @@ export type HqRoom = {
   /** Seated (non-lounge) agents. */
   agents: number;
   threadIds: ReadonlySet<string>;
+  /** Newest first. */
+  shelf: readonly HqShelfDoc[];
 };
 
+export const HQ_SHELF_GROUPS = ["Pull requests", "Pages", "Markdown", "Other links"] as const;
+export type HqShelfDoc = {
+  name: string;
+  /** Same-origin `/hq/doc/...` reader URL, an external URL, or "" when HQ can't serve it. */
+  target: string;
+  group: (typeof HQ_SHELF_GROUPS)[number];
+  by: string;
+  ts: string;
+  prStatus?: string;
+  localPath?: string;
+};
+
+type FloorDoc = {
+  name: string;
+  url?: string;
+  href?: string;
+  ref?: string;
+  kind?: string;
+  by?: string;
+  ts?: string;
+  prStatus?: string;
+  localPath?: string;
+};
+type FloorDesk = { uuid?: string; name?: string; threadUrl?: string; docs?: FloorDoc[] };
 type FloorRoom = {
   slug: string;
   label: string;
   attention?: string[];
   zone?: HqRoom["zone"];
-  desks?: Array<{ threadUrl?: string }>;
-  lounge?: Array<{ threadUrl?: string }>;
+  desks?: FloorDesk[];
+  lounge?: FloorDesk[];
+  orphanDocs?: FloorDoc[];
 };
+
+// Mirrors web/lib/shelf.ts in HQ: recorded kind first, then what the link says.
+function shelfGroup(doc: FloorDoc, link: string): HqShelfDoc["group"] {
+  const target = link.toLowerCase();
+  if (
+    doc.kind === "pr" ||
+    /github\.com\/[^/]+\/[^/]+\/pull\/\d+|graphite\.com\/github\/pr\//.test(target)
+  )
+    return "Pull requests";
+  if (doc.kind === "page" || target.endsWith(".html") || /notion\.(so|com)/.test(target))
+    return "Pages";
+  if (doc.kind === "md" || target.endsWith(".md")) return "Markdown";
+  return "Other links";
+}
+
+function parseShelf(room: FloorRoom): HqShelfDoc[] {
+  const desks = [...(room.desks ?? []), ...(room.lounge ?? [])];
+  const names = new Map(desks.map((desk) => [desk.uuid, desk.name ?? ""]));
+  const entries = [
+    ...desks.flatMap((desk) => (desk.docs ?? []).map((doc) => ({ doc, by: desk.name ?? "" }))),
+    ...(room.orphanDocs ?? []).map((doc) => ({ doc, by: names.get(doc.by) ?? "" })),
+  ];
+  const byTarget = new Map<string, HqShelfDoc>();
+  for (const { doc, by } of entries) {
+    const link = doc.href || doc.url || doc.ref || "";
+    const target = link.startsWith("/doc/") ? `/hq${link}` : /^https?:/.test(link) ? link : "";
+    const key = link || doc.name;
+    if (byTarget.has(key)) continue;
+    byTarget.set(key, {
+      name: doc.name,
+      target,
+      group: shelfGroup(doc, link),
+      by,
+      ts: doc.ts ?? "",
+      ...(doc.prStatus ? { prStatus: doc.prStatus } : {}),
+      ...(doc.localPath ? { localPath: doc.localPath } : {}),
+    });
+  }
+  return [...byTarget.values()].toSorted((a, b) => b.ts.localeCompare(a.ts));
+}
 
 const SELECTED_KEY = "hq:selected-room";
 // ponytail: polls HQ's full floor feed (~1.4 MB); a slim rooms→threads endpoint if this stays.
@@ -47,6 +114,7 @@ export function parseFloorRooms(floor: readonly FloorRoom[]): HqRoom[] {
     label: room.label,
     attention: room.attention ?? [],
     zone: room.zone ?? "permanent",
+    shelf: parseShelf(room),
     agents: room.desks?.length ?? 0,
     threadIds: new Set(
       [...(room.desks ?? []), ...(room.lounge ?? [])]
@@ -176,7 +244,11 @@ export function HqRoomBar() {
       <button
         type="button"
         className="flex min-w-0 items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-foreground hover:bg-accent"
-        onClick={() => void navigate({ to: "/rooms" })}
+        onClick={() =>
+          void (selectedSlug
+            ? navigate({ to: "/rooms/$slug", params: { slug: selectedSlug } })
+            : navigate({ to: "/rooms" }))
+        }
       >
         <LayoutGridIcon className="size-3 shrink-0" />
         <span className="truncate">{selectedLabel ?? "All rooms"}</span>
