@@ -6,6 +6,7 @@ import { LayoutGridIcon, XIcon } from "lucide-react";
 import { useEffect, useSyncExternalStore } from "react";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
+import type { SidebarThreadSummary } from "~/types";
 
 export type HqRoom = {
   slug: string;
@@ -122,6 +123,40 @@ export function sortThreadsByActivity<T extends ActivityInput>(threads: readonly
     (left, right) =>
       threadActivityMs(right) - threadActivityMs(left) || left.id.localeCompare(right.id),
   );
+}
+
+// Mirrors server/status/collect.ts in HQ.
+export const HQ_ATTENTION_LABELS: Record<string, string> = {
+  decision: "Decision",
+  task: "Task",
+  blocked: "Blocked",
+  "direct-done": "New result",
+};
+
+/** A room's live threads (all live threads for null), most recently active first. */
+export function hqRoomThreads(
+  room: HqRoom | null,
+  threads: readonly SidebarThreadSummary[],
+): SidebarThreadSummary[] {
+  return sortThreadsByActivity(
+    threads.filter(
+      (thread) => thread.archivedAt === null && (room === null || room.threadIds.has(thread.id)),
+    ),
+  );
+}
+
+/** Filter the sidebar to a room and open a thread in it; false when there is none. */
+export function useOpenHqRoom() {
+  const navigate = useNavigate();
+  return (slug: string | null, thread: SidebarThreadSummary | undefined) => {
+    selectHqRoom(slug);
+    if (!thread) return false;
+    void navigate({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: thread.environmentId, threadId: thread.id },
+    });
+    return true;
+  };
 }
 
 /** One-line sidebar entry: the current room opens /rooms; sort stays inline. */

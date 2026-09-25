@@ -47,6 +47,7 @@ import {
   FileSearchIcon,
   FolderIcon,
   FolderPlusIcon,
+  LayoutGridIcon,
   LinkIcon,
   MessageSquareIcon,
   MonitorIcon,
@@ -97,6 +98,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
+import { HQ_ATTENTION_LABELS, hqRoomThreads, useHqRooms, useOpenHqRoom } from "../hqRooms";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -776,6 +778,8 @@ function OpenCommandPaletteDialog(props: {
   }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  const { rooms: hqRooms } = useHqRooms();
+  const openHqRoom = useOpenHqRoom();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const {
     theme,
@@ -2041,6 +2045,17 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:rooms",
+    searchTerms: ["open rooms", "hq", "overview", "filter"],
+    title: "Open rooms",
+    icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/rooms" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:settings",
     searchTerms: ["settings", "preferences", "configuration", "keybindings"],
     title: "Open settings",
@@ -2109,6 +2124,22 @@ function OpenCommandPaletteDialog(props: {
       });
     },
   }));
+  // HQ Rooms spike: picking a room filters the sidebar and opens its latest thread.
+  const roomSearchItems: CommandPaletteActionItem[] = [null, ...hqRooms].map((room) => {
+    const roomThreads = hqRoomThreads(room, threads);
+    const flags = (room?.attention ?? []).map((flag) => HQ_ATTENTION_LABELS[flag] ?? flag);
+    return {
+      kind: "action",
+      value: `room:${room?.slug ?? "all"}`,
+      searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
+      title: room?.label ?? "All threads",
+      description: [`${roomThreads.length} threads`, ...flags].join(" · "),
+      icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        openHqRoom(room?.slug ?? null, roomThreads[0]);
+      },
+    };
+  });
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =
@@ -2131,6 +2162,7 @@ function OpenCommandPaletteDialog(props: {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     settingsSearchItems,
+    roomSearchItems,
     threadSearchItems:
       linkedThreadSearch?.linkedThreads && deferredQuery === linkedThreadSearch.query
         ? buildLinkedThreadActionItems({
