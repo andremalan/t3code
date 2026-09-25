@@ -244,26 +244,24 @@ export default defineConfig(() => {
             // Vite's HMR socket is matched separately and exactly (path "/"
             // plus a vite-hmr subprotocol), so the upgrade handlers don't
             // collide.
-            proxy: Object.fromEntries(
-              DEV_PROXIED_PATH_PREFIXES.map((prefix) => [
-                prefix,
-                {
-                  target: devProxyTarget,
-                  changeOrigin: true,
-                  ...(prefix === "/ws" || prefix === "/api" ? { ws: true } : {}),
-                },
-              ]).concat([
-                // HQ Rooms spike: the local HQ app supplies rooms.
-                [
-                  "/hq",
+            proxy: {
+              ...Object.fromEntries(
+                DEV_PROXIED_PATH_PREFIXES.map((prefix) => [
+                  prefix,
                   {
-                    target: "http://127.0.0.1:3939",
+                    target: devProxyTarget,
                     changeOrigin: true,
-                    rewrite: (path: string) => path.replace(/^\/hq/, ""),
+                    ...(prefix === "/ws" || prefix === "/api" ? { ws: true } : {}),
                   },
-                ],
-              ]),
-            ),
+                ]),
+              ),
+              // HQ Rooms spike: the local HQ app supplies rooms.
+              "/hq": {
+                target: "http://127.0.0.1:3939",
+                changeOrigin: true,
+                rewrite: (path: string) => path.replace(/^\/hq/, ""),
+              },
+            },
           }
         : {}),
       // Electron's BrowserWindow needs the HMR socket pinned to an explicit
