@@ -239,6 +239,7 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { HqRoomBar, sortThreadsByActivity, threadActivityMs, useHqRooms } from "../hqRooms";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { MiddleTruncate } from "./ui/middle-truncate";
@@ -264,9 +265,11 @@ function compactSidebarTimeLabel(label: string): string {
   return label.endsWith(" ago") ? label.slice(0, -4) : label;
 }
 
+// Active rows show the same activity time the HQ fork sorts by.
 function threadTimeLabel(thread: SidebarThreadSummary): string {
-  const timestamp = thread.latestUserMessageAt ?? thread.updatedAt;
-  return compactSidebarTimeLabel(formatRelativeTimeLabel(timestamp));
+  return compactSidebarTimeLabel(
+    formatRelativeTimeLabel(new Date(threadActivityMs(thread)).toISOString()),
+  );
 }
 
 // Settled rows read "how long ago did this wrap up", matching their sort
@@ -2465,6 +2468,8 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const { selectedThreadIds: hqRoomThreadIds } = useHqRooms();
+  const threadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2573,6 +2578,7 @@ export default function Sidebar() {
     const visible = threads.filter(
       (thread) =>
         thread.archivedAt === null &&
+        (hqRoomThreadIds === null || hqRoomThreadIds.has(thread.id)) &&
         (scopedProjectKeys === null ||
           scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
     );
@@ -2591,7 +2597,10 @@ export default function Sidebar() {
       const supportsSettlement = capabilities?.threadSettlement === true;
       const supportsSnooze = capabilities?.threadSnooze === true;
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      if (capabilities?.threadActiveReorder === true) activeReorderable.add(threadKey);
+      // Activity order has no manual positions, so dragging active rows is off.
+      if (capabilities?.threadActiveReorder === true && threadSortOrder === "created_at") {
+        activeReorderable.add(threadKey);
+      }
       // Older servers retain their existing drag actions. Active placement
       // additionally requires its own ordering capability at the drop target.
       if (capabilities?.threadPinning === true && capabilities.threadPinReorder === true) {
@@ -2631,7 +2640,10 @@ export default function Sidebar() {
     // sort, or mixed-version fleets would render different pinned orders on
     // web and mobile from the same data.
     const sortedPinned = sortPinnedThreadsForSidebar(pinned);
-    const sortedActive = sortThreadsForSidebar(active);
+    const sortedActive =
+      threadSortOrder === "updated_at"
+        ? sortThreadsByActivity(active)
+        : sortThreadsForSidebar(active);
     return {
       pinnedThreads:
         optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
@@ -2660,7 +2672,31 @@ export default function Sidebar() {
       settledThreads: sortSettledThreads(settled),
       snoozeNow: preciseNow,
     };
-  }, [nowMinute, optimisticDrop, scopedProjectKeys, serverConfigs, snoozeWakeTick, threads]);
+  }, [
+    hqRoomThreadIds,
+    nowMinute,
+    optimisticDrop,
+    scopedProjectKeys,
+    serverConfigs,
+    snoozeWakeTick,
+    threadSortOrder,
+    threads,
+  ]);
+  // Room chip counts respect the project scope but not the room selection itself.
+  const hqVisibleThreadIds = useMemo(
+    () =>
+      new Set(
+        threads
+          .filter(
+            (thread) =>
+              thread.archivedAt === null &&
+              (scopedProjectKeys === null ||
+                scopedProjectKeys.has(`${thread.environmentId}:${thread.projectId}`)),
+          )
+          .map((thread) => thread.id as string),
+      ),
+    [scopedProjectKeys, threads],
+  );
 
   const threadSearchInputRef = useRef<HTMLInputElement>(null);
   const [threadSearchQuery, setThreadSearchQuery] = useState("");
@@ -4599,6 +4635,7 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            <HqRoomBar visibleThreadIds={hqVisibleThreadIds} />
           </SidebarGroup>
         }
       >

@@ -252,6 +252,16 @@ export default defineConfig(() => {
                   changeOrigin: true,
                   ...(prefix === "/ws" || prefix === "/api" ? { ws: true } : {}),
                 },
+              ]).concat([
+                // HQ Rooms spike: the local HQ app supplies rooms.
+                [
+                  "/hq",
+                  {
+                    target: "http://127.0.0.1:3939",
+                    changeOrigin: true,
+                    rewrite: (path: string) => path.replace(/^\/hq/, ""),
+                  },
+                ],
               ]),
             ),
           }
