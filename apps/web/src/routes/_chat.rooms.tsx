@@ -1,6 +1,6 @@
 // HQ Rooms spike: full main-panel room overview. Picking a room sets the sidebar
 // filter and opens that room's most recently active thread.
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo } from "react";
 
 import { resolveThreadStatusPill } from "../components/Sidebar.logic";
@@ -8,11 +8,12 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import {
+  HQ_ATTENTION_LABELS,
   type HqRoom,
-  selectHqRoom,
-  sortThreadsByActivity,
+  hqRoomThreads,
   threadActivityMs,
   useHqRooms,
+  useOpenHqRoom,
 } from "../hqRooms";
 import { cn } from "../lib/utils";
 import { useThreadShells } from "../state/entities";
@@ -35,26 +36,15 @@ const ZONES = [
   ["backlog", "Backlog"],
   ["permanent", "Permanent"],
 ] as const;
-// Mirrors server/status/collect.ts in HQ.
-const ATTENTION_LABELS: Record<string, string> = {
-  decision: "Decision",
-  task: "Task",
-  blocked: "Blocked",
-  "direct-done": "New result",
-};
 
 function RoomsRouteView() {
-  const navigate = useNavigate();
+  const openRoom = useOpenHqRoom();
   const { rooms, selectedSlug } = useHqRooms();
   const threads = useThreadShells();
 
   const cards = useMemo(() => {
-    const live = threads.filter((thread) => thread.archivedAt === null);
-    const byId = new Map(live.map((thread) => [thread.id as string, thread]));
     const roomCards = rooms.map((room): RoomCard => {
-      const roomThreads = sortThreadsByActivity(
-        [...room.threadIds].flatMap((id) => byId.get(id) ?? []),
-      );
+      const roomThreads = hqRoomThreads(room, threads);
       return {
         slug: room.slug as string | null,
         label: room.label,
@@ -65,7 +55,7 @@ function RoomsRouteView() {
         latestMs: roomThreads[0] ? threadActivityMs(roomThreads[0]) : 0,
       };
     });
-    const allThreads = sortThreadsByActivity(live);
+    const allThreads = hqRoomThreads(null, threads);
     const all: RoomCard = {
       slug: null,
       label: "All threads",
@@ -90,15 +80,7 @@ function RoomsRouteView() {
   }, [rooms, threads]);
 
   const open = (slug: string | null, thread: SidebarThreadSummary | undefined) => {
-    selectHqRoom(slug);
-    if (thread) {
-      void navigate({
-        to: "/$environmentId/$threadId",
-        params: { environmentId: thread.environmentId, threadId: thread.id },
-      });
-    } else {
-      window.history.back();
-    }
+    if (!openRoom(slug, thread)) window.history.back();
   };
 
   useEffect(() => {
@@ -149,7 +131,7 @@ function RoomsRouteView() {
                             key={flag}
                             className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
                           >
-                            {ATTENTION_LABELS[flag] ?? flag}
+                            {HQ_ATTENTION_LABELS[flag] ?? flag}
                           </span>
                         ))}
                       </span>
