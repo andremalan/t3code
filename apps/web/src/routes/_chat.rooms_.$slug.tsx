@@ -1,7 +1,7 @@
 // HQ Rooms spike: one room's page. Visiting it filters the sidebar to the room;
 // it lists the room's threads and shelf, and reads HQ documents in place.
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { resolveThreadStatusPill } from "../components/Sidebar.logic";
 import { SidebarInset } from "../components/ui/sidebar";
@@ -10,6 +10,7 @@ import { isElectron } from "../env";
 import {
   HQ_ATTENTION_LABELS,
   hqRoomThreads,
+  HqThreadActions,
   selectHqRoom,
   threadActivityMs,
   useHqRooms,
@@ -34,6 +35,7 @@ function RoomRouteView() {
   const room = rooms.find((candidate) => candidate.slug === slug) ?? null;
   const roomThreads = useMemo(() => (room ? hqRoomThreads(room, threads) : []), [room, threads]);
   const openDoc = room?.shelf.find((entry) => entry.target === doc) ?? null;
+  const [status, setStatus] = useState("");
 
   useEffect(() => selectHqRoom(slug), [slug]);
 
@@ -72,6 +74,11 @@ function RoomRouteView() {
               {HQ_ATTENTION_LABELS[flag] ?? flag}
             </span>
           ))}
+          {status ? (
+            <span role="status" className="ml-auto text-xs text-muted-foreground">
+              {status}
+            </span>
+          ) : null}
         </WorkspacePageHeader>
         <div className="flex min-h-0 flex-1">
           <div
@@ -93,10 +100,13 @@ function RoomRouteView() {
                   {roomThreads.map((thread) => {
                     const status = resolveThreadStatusPill({ thread });
                     return (
-                      <li key={`${thread.environmentId}:${thread.id}`}>
+                      <li
+                        key={`${thread.environmentId}:${thread.id}`}
+                        className="group/row relative"
+                      >
                         <button
                           type="button"
-                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
+                          className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm group-hover/row:bg-accent"
                           onClick={() => openRoom(slug, thread)}
                         >
                           <span
@@ -108,10 +118,11 @@ function RoomRouteView() {
                             title={status?.label}
                           />
                           <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                          <span className="shrink-0 text-xs text-muted-foreground">
+                          <span className="shrink-0 text-xs text-muted-foreground group-hover/row:invisible">
                             {relative(threadActivityMs(thread))}
                           </span>
                         </button>
+                        <HqThreadActions slug={slug} thread={thread} onStatus={setStatus} />
                       </li>
                     );
                   })}

@@ -1,9 +1,21 @@
 // HQ Rooms: rooms come from the local HQ app (proxied at /hq) and
 // filter the sidebar by thread id. Selection is a local preference; /rooms picks it.
 import type { SidebarThreadSortOrder } from "@t3tools/contracts";
-import { useNavigate } from "@tanstack/react-router";
-import { LayoutGridIcon, XIcon } from "lucide-react";
-import { useEffect, useSyncExternalStore } from "react";
+import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import { LayoutGridIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+
+import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "~/components/ui/dialog";
+import { cn } from "~/lib/utils";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import type { SidebarThreadSummary } from "~/types";
@@ -68,22 +80,25 @@ let archived: readonly HqArchivedRoom[] = [];
 
 let feedTag = "";
 
-// HQ's floor shows a newly attached thread a minute or two later, so an attach stays applied here
-// until the feed has it (or HQ still lacks it after PENDING_MS).
+// HQ's floor shows membership changes a minute or two later, so an attach or detach stays applied
+// here until the feed agrees (or still disagrees after PENDING_MS).
 const PENDING_MS = 5 * 60_000;
-const pendingThreads = new Map<string, { slug: string; at: number }>();
+const pendingThreads = new Map<string, { slug: string; at: number; member: boolean }>();
 function withPending(next: readonly HqRoom[]): readonly HqRoom[] {
-  for (const [threadId, { slug, at }] of pendingThreads)
+  for (const [threadId, { slug, at, member }] of pendingThreads)
     if (
       Date.now() - at > PENDING_MS ||
-      next.some((room) => room.slug === slug && room.threadIds.has(threadId))
+      next.some((room) => room.slug === slug && room.threadIds.has(threadId) === member)
     )
       pendingThreads.delete(threadId);
   return next.map((room) => {
-    const added = [...pendingThreads].filter(([, pending]) => pending.slug === room.slug);
-    return added.length
-      ? { ...room, threadIds: new Set([...room.threadIds, ...added.map(([threadId]) => threadId)]) }
-      : room;
+    const changes = [...pendingThreads].filter(([, pending]) => pending.slug === room.slug);
+    if (!changes.length) return room;
+    const threadIds = new Set(room.threadIds);
+    for (const [threadId, { member }] of changes)
+      if (member) threadIds.add(threadId);
+      else threadIds.delete(threadId);
+    return { ...room, threadIds };
   });
 }
 
@@ -102,20 +117,20 @@ async function refresh() {
   }
 }
 
-async function postHq(path: string, body: unknown): Promise<string> {
+async function postHq<T = {}>(path: string, body: unknown): Promise<T & { said?: string }> {
   const response = await fetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  const result = (await response.json().catch(() => ({}))) as {
+  const result = (await response.json().catch(() => ({}))) as T & {
     ok?: boolean;
     error?: string;
     said?: string;
   };
   if (!response.ok || !result.ok)
     throw new Error(result.error || `HQ refused (${response.status}).`);
-  return result.said ?? "";
+  return result;
 }
 
 export const HQ_ZONES = ["today", "permanent", "backlog"] as const;
@@ -164,30 +179,55 @@ export async function moveHqRoom(slug: string, zone: HqRoom["zone"], before: str
   }
 }
 
-/** Adds a T3 thread to a room now (HQ attaches the thread's session); reverts if HQ refuses. */
-export async function attachHqThread(slug: string, threadId: string) {
-  pendingThreads.set(threadId, { slug, at: Date.now() });
+/** Adds a T3 thread to a room, or removes it, now (HQ acts on the thread's session); reverts if HQ refuses. */
+export async function setHqThreadRoom(slug: string, threadId: string, member: boolean) {
+  const previous = pendingThreads.get(threadId);
+  pendingThreads.set(threadId, { slug, at: Date.now(), member });
   rooms = withPending(rooms);
   emit();
   try {
     await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
-      action: "attach",
+      action: member ? "attach" : "detach",
       thread: threadId,
     });
   } catch (error) {
-    pendingThreads.delete(threadId);
-    rooms = rooms.map((room) =>
-      room.slug === slug
-        ? { ...room, threadIds: new Set([...room.threadIds].filter((id) => id !== threadId)) }
-        : room,
-    );
+    if (previous) pendingThreads.set(threadId, previous);
+    else pendingThreads.delete(threadId);
+    rooms = rooms.map((room) => {
+      if (room.slug !== slug) return room;
+      const threadIds = new Set(room.threadIds);
+      if (member) threadIds.delete(threadId);
+      else threadIds.add(threadId);
+      return { ...room, threadIds };
+    });
     emit();
     throw error;
   }
 }
 
+export type HqModel = { model: string; engine: string };
+export async function hqRoomModels(slug: string): Promise<HqModel[]> {
+  const response = await fetch(`/hq/api/room/${encodeURIComponent(slug)}`);
+  if (!response.ok) throw new Error(`HQ refused (${response.status}).`);
+  const room = (await response.json()) as { context?: { agentCatalog?: { models?: HqModel[] } } };
+  return room.context?.agentCatalog?.models ?? [];
+}
+
+/** Starts a fresh agent that continues the thread's recorded state; HQ retitles the old thread. */
+export async function replaceHqThread(slug: string, threadId: string, model: string) {
+  const { result } = await postHq<{ result: { thread: string; titleWarning?: string } }>(
+    `/hq/api/room/${encodeURIComponent(slug)}`,
+    { action: "replace", thread: threadId, ...(model ? { model } : {}) },
+  );
+  // The replacement joins the room; show it before the floor does.
+  pendingThreads.set(result.thread, { slug, at: Date.now(), member: true });
+  rooms = withPending(rooms);
+  emit();
+  return result;
+}
+
 export async function archiveHqRoom(slug: string): Promise<string> {
-  const said = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
+  const { said = "" } = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
     action: "archive",
     reason: "Archived from the rooms overview",
   });
@@ -197,7 +237,9 @@ export async function archiveHqRoom(slug: string): Promise<string> {
 }
 
 export async function unarchiveHqRoom(slug: string): Promise<string> {
-  const said = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, { action: "unarchive" });
+  const { said = "" } = await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
+    action: "unarchive",
+  });
   await refresh();
   return said;
 }
@@ -360,5 +402,176 @@ export function HqRoomBar() {
         ))}
       </span>
     </div>
+  );
+}
+
+/** Sidebar header links: all rooms, and the open thread's room when it has one. */
+export function HqRoomsLink({ onBackdrop }: { onBackdrop: boolean }) {
+  const { threadId } = useParams({ strict: false });
+  const { rooms: current } = useHqRooms();
+  const room = threadId ? current.find((each) => each.threadIds.has(threadId)) : undefined;
+  const link = cn(
+    "shrink-0 truncate rounded-md px-1 text-xs outline-hidden ring-ring focus-visible:ring-2",
+    onBackdrop ? "text-white/70 hover:text-white" : "text-muted-foreground hover:text-foreground",
+  );
+  return (
+    <span
+      className="relative z-10 ml-2 hidden min-w-0 items-center md:flex"
+      data-testid="hq-rooms-link"
+    >
+      <Link to="/rooms" className={link}>
+        Rooms
+      </Link>
+      {room ? (
+        <>
+          <span className={onBackdrop ? "text-white/50" : "text-muted-foreground/60"}>/</span>
+          <Link
+            to="/rooms/$slug"
+            params={{ slug: room.slug }}
+            className={cn(link, "min-w-0 shrink")}
+          >
+            {room.label}
+          </Link>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+/** Hover actions for a thread row in a room. Put inside a relative `group/row` element. */
+export function HqThreadActions({
+  slug,
+  thread,
+  onStatus,
+}: {
+  slug: string;
+  thread: Pick<SidebarThreadSummary, "id" | "environmentId" | "title">;
+  onStatus: (message: string) => void;
+}) {
+  const [replacing, setReplacing] = useState(false);
+  const button = "rounded p-1 text-muted-foreground hover:bg-background hover:text-foreground";
+  return (
+    <span className="pointer-events-none absolute inset-y-0 right-1 flex items-center gap-0.5 rounded-md bg-accent pl-1 opacity-0 group-hover/row:pointer-events-auto group-hover/row:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100">
+      <button
+        type="button"
+        aria-label="Replace agent"
+        title="Replace with a fresh agent"
+        className={button}
+        onClick={() => setReplacing(true)}
+      >
+        <RefreshCwIcon className="size-3" />
+      </button>
+      <button
+        type="button"
+        aria-label="Remove from room"
+        title="Remove from room"
+        className={button}
+        onClick={() =>
+          setHqThreadRoom(slug, thread.id, false).then(
+            () => onStatus(`Removed ${thread.title} from the room.`),
+            (error: unknown) => onStatus(error instanceof Error ? error.message : String(error)),
+          )
+        }
+      >
+        <XIcon className="size-3" />
+      </button>
+      {replacing ? (
+        <HqReplaceDialog
+          slug={slug}
+          thread={thread}
+          onClose={() => setReplacing(false)}
+          onStatus={onStatus}
+        />
+      ) : null}
+    </span>
+  );
+}
+
+function HqReplaceDialog({
+  slug,
+  thread,
+  onClose,
+  onStatus,
+}: {
+  slug: string;
+  thread: Pick<SidebarThreadSummary, "id" | "environmentId" | "title">;
+  onClose: () => void;
+  onStatus: (message: string) => void;
+}) {
+  const navigate = useNavigate();
+  const [models, setModels] = useState<HqModel[] | null>(null);
+  const [model, setModel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    hqRoomModels(slug).then(setModels, () => setModels([]));
+  }, [slug]);
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
+      <DialogPopup className="sm:max-w-sm">
+        <form
+          className="flex min-h-0 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault();
+            setBusy(true);
+            setError("");
+            replaceHqThread(slug, thread.id, model).then(
+              (result) => {
+                onClose();
+                if (result.titleWarning) onStatus(result.titleWarning);
+                selectHqRoom(slug);
+                void navigate({
+                  to: "/$environmentId/$threadId",
+                  params: { environmentId: thread.environmentId, threadId: result.thread },
+                });
+              },
+              (failure: unknown) => {
+                setBusy(false);
+                setError(failure instanceof Error ? failure.message : String(failure));
+              },
+            );
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>Replace agent</DialogTitle>
+            <DialogDescription>
+              Starts a fresh agent in this room that continues from {thread.title}&apos;s recorded
+              state. The old thread stays in history with a Replaced title.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="flex flex-col gap-2 text-sm">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">Model</span>
+              <select
+                className="h-8 rounded-md border border-input bg-background px-2"
+                value={model}
+                disabled={busy}
+                onChange={(event) => setModel(event.target.value)}
+              >
+                <option value="">Keep current model (latest version)</option>
+                {models?.map((each) => (
+                  <option key={each.model} value={each.model}>
+                    {each.model} ({each.engine})
+                  </option>
+                ))}
+              </select>
+            </label>
+            {error ? (
+              <p role="alert" className="text-xs text-destructive">
+                {error}
+              </p>
+            ) : null}
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Starting…" : "Replace"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }
