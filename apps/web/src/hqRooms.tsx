@@ -68,13 +68,32 @@ let archived: readonly HqArchivedRoom[] = [];
 
 let feedTag = "";
 
+// HQ's floor shows a newly attached thread a minute or two later, so an attach stays applied here
+// until the feed has it (or HQ still lacks it after PENDING_MS).
+const PENDING_MS = 5 * 60_000;
+const pendingThreads = new Map<string, { slug: string; at: number }>();
+function withPending(next: readonly HqRoom[]): readonly HqRoom[] {
+  for (const [threadId, { slug, at }] of pendingThreads)
+    if (
+      Date.now() - at > PENDING_MS ||
+      next.some((room) => room.slug === slug && room.threadIds.has(threadId))
+    )
+      pendingThreads.delete(threadId);
+  return next.map((room) => {
+    const added = [...pendingThreads].filter(([, pending]) => pending.slug === room.slug);
+    return added.length
+      ? { ...room, threadIds: new Set([...room.threadIds, ...added.map(([threadId]) => threadId)]) }
+      : room;
+  });
+}
+
 async function refresh() {
   try {
     const response = await fetch("/hq/api/rooms", { cache: "no-cache" });
     const tag = response.headers.get("etag") ?? "";
     if (!response.ok || (tag && tag === feedTag)) return;
     const feed = (await response.json()) as { rooms: FeedRoom[]; archived: HqArchivedRoom[] };
-    rooms = parseRoomsFeed(feed.rooms);
+    rooms = withPending(parseRoomsFeed(feed.rooms));
     archived = feed.archived;
     feedTag = tag;
     emit();
@@ -101,36 +120,67 @@ async function postHq(path: string, body: unknown): Promise<string> {
 
 export const HQ_ZONES = ["today", "permanent", "backlog"] as const;
 
-/** The HQ room order after moving one room to the end of a section. */
+/** The HQ room order after moving one room before another, or to the end of a section. */
 export function moveRoomOrder(
   current: readonly Pick<HqRoom, "slug" | "zone">[],
   slug: string,
   zone: HqRoom["zone"],
+  before: string | null = null,
 ): Record<HqRoom["zone"], string[]> {
   const moved = current.filter((room) => room.slug !== slug);
   return Object.fromEntries(
-    HQ_ZONES.map((name) => [
-      name,
-      [
-        ...moved.filter((room) => room.zone === name).map((room) => room.slug),
-        ...(name === zone ? [slug] : []),
-      ],
-    ]),
+    HQ_ZONES.map((name) => {
+      const slugs = moved.filter((room) => room.zone === name).map((room) => room.slug);
+      if (name === zone) {
+        const at = before ? slugs.indexOf(before) : -1;
+        slugs.splice(at < 0 ? slugs.length : at, 0, slug);
+      }
+      return [name, slugs];
+    }),
   ) as Record<HqRoom["zone"], string[]>;
 }
 
-/** Moves a room to another section now; reverts if HQ refuses. */
-export async function moveHqRoom(slug: string, zone: HqRoom["zone"]) {
-  const room = rooms.find((candidate) => candidate.slug === slug);
-  if (!room || room.zone === zone) return;
+/** Moves a room now (before another room, or to the end of a section); reverts if HQ refuses. */
+export async function moveHqRoom(slug: string, zone: HqRoom["zone"], before: string | null = null) {
+  const bySlug = new Map(rooms.map((room) => [room.slug, room]));
+  if (!bySlug.has(slug) || before === slug) return;
   const previous = rooms;
-  const order = moveRoomOrder(rooms, slug, zone);
-  rooms = [...rooms.filter((candidate) => candidate.slug !== slug), { ...room, zone }];
+  const order = moveRoomOrder(rooms, slug, zone, before);
+  const next = HQ_ZONES.flatMap((name) =>
+    order[name].map((each) => ({ ...bySlug.get(each)!, zone: name })),
+  );
+  if (
+    next.every((room, index) => room.slug === rooms[index]?.slug && room.zone === rooms[index].zone)
+  )
+    return;
+  rooms = next;
   emit();
   try {
     await postHq("/hq/api/rooms", order);
   } catch (error) {
     rooms = previous;
+    emit();
+    throw error;
+  }
+}
+
+/** Adds a T3 thread to a room now (HQ attaches the thread's session); reverts if HQ refuses. */
+export async function attachHqThread(slug: string, threadId: string) {
+  pendingThreads.set(threadId, { slug, at: Date.now() });
+  rooms = withPending(rooms);
+  emit();
+  try {
+    await postHq(`/hq/api/room/${encodeURIComponent(slug)}`, {
+      action: "attach",
+      thread: threadId,
+    });
+  } catch (error) {
+    pendingThreads.delete(threadId);
+    rooms = rooms.map((room) =>
+      room.slug === slug
+        ? { ...room, threadIds: new Set([...room.threadIds].filter((id) => id !== threadId)) }
+        : room,
+    );
     emit();
     throw error;
   }
@@ -233,6 +283,17 @@ export function hqRoomThreads(
     threads.filter(
       (thread) => thread.archivedAt === null && (room === null || room.threadIds.has(thread.id)),
     ),
+  );
+}
+
+/** Live, unsettled threads that no room holds, most recently active first. */
+export function hqUnroomedThreads(
+  rooms: readonly HqRoom[],
+  threads: readonly SidebarThreadSummary[],
+): SidebarThreadSummary[] {
+  return hqRoomThreads(null, threads).filter(
+    (thread) =>
+      thread.settledOverride !== "settled" && !rooms.some((room) => room.threadIds.has(thread.id)),
   );
 }
 

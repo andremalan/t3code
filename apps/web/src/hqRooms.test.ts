@@ -31,6 +31,19 @@ describe("moveRoomOrder", () => {
       backlog: [],
     });
   });
+
+  it("inserts a room before another, within or across sections", () => {
+    expect(moveRoomOrder(rooms, "b", "today", "a")).toEqual({
+      today: ["b", "a"],
+      permanent: ["c"],
+      backlog: [],
+    });
+    expect(moveRoomOrder(rooms, "c", "today", "b")).toEqual({
+      today: ["a", "c", "b"],
+      permanent: [],
+      backlog: [],
+    });
+  });
 });
 
 describe("parseRoomsFeed", () => {
