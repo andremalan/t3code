@@ -2,21 +2,24 @@
 // filter and opens that room's most recently active thread. Rooms drag to reorder, to
 // another section or to Archived; threads outside any room drag onto a room. All write to HQ.
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { ArchiveIcon } from "lucide-react";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { ArchiveIcon, CheckIcon } from "lucide-react";
 import { type DragEvent, useEffect, useMemo, useState } from "react";
 
 import { resolveThreadStatusPill } from "../components/Sidebar.logic";
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
+import { useThreadActions } from "../hooks/useThreadActions";
 import {
   archiveHqRoom,
-  attachHqThread,
   HQ_ATTENTION_LABELS,
   type HqRoom,
   hqRoomThreads,
   hqUnroomedThreads,
+  HqThreadActions,
   moveHqRoom,
+  setHqThreadRoom,
   threadActivityMs,
   unarchiveHqRoom,
   useHqRooms,
@@ -56,6 +59,7 @@ function RoomsRouteView() {
   const [status, setStatus] = useState("");
   const [over, setOver] = useState<{ name: string; kind: DragKind } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
+  const { settleThread } = useThreadActions();
 
   const act = (work: Promise<string | void>) => {
     setStatus("");
@@ -152,7 +156,8 @@ function RoomsRouteView() {
           <span className="text-sm font-medium">Rooms</span>
           <span className="text-xs text-muted-foreground">
             Open a room for its threads and shelf; it also filters the sidebar. Drag rooms to
-            reorder them, and drag a thread onto a room to add it. Esc to go back.
+            reorder them, and drag a thread onto a room to add it. Hover a room&apos;s thread to
+            replace or remove it. Esc to go back.
           </span>
           {status ? (
             <span role="status" className="ml-auto text-xs text-muted-foreground">
@@ -197,7 +202,8 @@ function RoomsRouteView() {
                       {...(card.slug
                         ? dropTarget(`card:${card.slug}`, {
                             [ROOM_DRAG]: (slug) => act(moveHqRoom(slug, section.zone, card.slug)),
-                            [THREAD_DRAG]: (threadId) => act(attachHqThread(card.slug!, threadId)),
+                            [THREAD_DRAG]: (threadId) =>
+                              act(setHqThreadRoom(card.slug!, threadId, true)),
                           })
                         : {})}
                       draggable={card.slug !== null}
@@ -251,10 +257,13 @@ function RoomsRouteView() {
                         {card.threads.slice(0, PREVIEW_THREADS).map((thread) => {
                           const status = resolveThreadStatusPill({ thread });
                           return (
-                            <li key={`${thread.environmentId}:${thread.id}`}>
+                            <li
+                              key={`${thread.environmentId}:${thread.id}`}
+                              className="group/row relative"
+                            >
                               <button
                                 type="button"
-                                className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent"
+                                className="flex w-full items-center gap-2 px-3 py-1 text-left text-xs group-hover/row:bg-accent"
                                 onClick={() => open(card.slug, thread)}
                                 title={status?.label}
                               >
@@ -266,12 +275,24 @@ function RoomsRouteView() {
                                   )}
                                 />
                                 <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                                <span className="shrink-0 text-muted-foreground">
+                                <span
+                                  className={cn(
+                                    "shrink-0 text-muted-foreground",
+                                    card.slug && "group-hover/row:invisible",
+                                  )}
+                                >
                                   {formatRelativeTimeLabel(
                                     new Date(threadActivityMs(thread)).toISOString(),
                                   )}
                                 </span>
                               </button>
+                              {card.slug ? (
+                                <HqThreadActions
+                                  slug={card.slug}
+                                  thread={thread}
+                                  onStatus={setStatus}
+                                />
+                              ) : null}
                             </li>
                           );
                         })}
@@ -343,7 +364,7 @@ function RoomsRouteView() {
               Not in a room {unroomed.length}
             </h2>
             <p className="px-3 pb-2 text-xs text-muted-foreground">
-              Unsettled threads. Drag one onto a room to add it.
+              Unsettled threads. Drag one onto a room to add it, or settle it.
             </p>
             <ul className="min-h-0 flex-1 overflow-y-auto pb-4">
               {unroomed.map((thread) => {
@@ -351,6 +372,7 @@ function RoomsRouteView() {
                 return (
                   <li
                     key={`${thread.environmentId}:${thread.id}`}
+                    className="group/row relative"
                     draggable
                     onDragStart={(event) => {
                       event.dataTransfer.setData(THREAD_DRAG, thread.id);
@@ -359,7 +381,7 @@ function RoomsRouteView() {
                   >
                     <button
                       type="button"
-                      className="flex w-full cursor-grab items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent"
+                      className="flex w-full cursor-grab items-center gap-2 px-3 py-1 text-left text-xs group-hover/row:bg-accent"
                       onClick={() => open(null, thread)}
                       title={status?.label}
                     >
@@ -371,9 +393,23 @@ function RoomsRouteView() {
                         )}
                       />
                       <span className="min-w-0 flex-1 truncate">{thread.title}</span>
-                      <span className="shrink-0 text-muted-foreground">
+                      <span className="shrink-0 text-muted-foreground group-hover/row:invisible">
                         {formatRelativeTimeLabel(new Date(threadActivityMs(thread)).toISOString())}
                       </span>
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Settle thread"
+                      title="Settle thread"
+                      className="pointer-events-none absolute inset-y-0 right-1 my-auto flex h-6 items-center rounded bg-accent px-1.5 text-muted-foreground opacity-0 group-hover/row:pointer-events-auto group-hover/row:opacity-100 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100"
+                      onClick={() =>
+                        void settleThread(scopeThreadRef(thread.environmentId, thread.id)).then(
+                          (result) =>
+                            result._tag === "Success" || setStatus("Could not settle that thread."),
+                        )
+                      }
+                    >
+                      <CheckIcon className="size-3" />
                     </button>
                   </li>
                 );
