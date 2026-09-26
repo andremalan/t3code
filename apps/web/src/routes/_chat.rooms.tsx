@@ -174,17 +174,6 @@ function RoomsRouteView() {
                       event.dataTransfer.effectAllowed = "move";
                     }}
                   >
-                    {card.slug ? (
-                      <button
-                        type="button"
-                        aria-label={`Archive ${card.label}`}
-                        title="Archive room"
-                        className="absolute top-2 right-2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
-                        onClick={() => act(archiveHqRoom(card.slug!))}
-                      >
-                        <ArchiveIcon className="size-3.5" />
-                      </button>
-                    ) : null}
                     <button
                       type="button"
                       className="flex flex-col gap-1 px-3 pt-3 pb-2 text-left"
@@ -214,6 +203,17 @@ function RoomsRouteView() {
                           : ""}
                       </span>
                     </button>
+                    {card.slug ? (
+                      <button
+                        type="button"
+                        aria-label={`Archive ${card.label}`}
+                        title="Archive room"
+                        className="absolute top-2 right-2 rounded p-1 text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-accent hover:text-foreground focus-visible:opacity-100"
+                        onClick={() => act(archiveHqRoom(card.slug!))}
+                      >
+                        <ArchiveIcon className="size-3.5" />
+                      </button>
+                    ) : null}
                     <ul className="flex flex-col border-t border-border/60 py-1">
                       {card.threads.slice(0, PREVIEW_THREADS).map((thread) => {
                         const status = resolveThreadStatusPill({ thread });

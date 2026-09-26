@@ -33,70 +33,25 @@ export type HqShelfDoc = {
   localPath?: string;
 };
 
-type FloorDoc = {
-  name: string;
-  url?: string;
-  href?: string;
-  ref?: string;
-  kind?: string;
-  by?: string;
-  ts?: string;
-  prStatus?: string;
-  localPath?: string;
-};
-type FloorDesk = { uuid?: string; name?: string; threadUrl?: string; docs?: FloorDoc[] };
-type FloorRoom = {
-  slug: string;
-  label: string;
-  attention?: string[];
-  zone?: HqRoom["zone"];
-  desks?: FloorDesk[];
-  lounge?: FloorDesk[];
-  orphanDocs?: FloorDoc[];
+/** HQ's GET /api/rooms feed (web/lib/rooms-feed.ts). */
+type FeedRoom = Omit<HqRoom, "threadIds" | "shelf"> & {
+  threadIds: string[];
+  shelf: Array<Omit<HqShelfDoc, "target"> & { link: string }>;
 };
 
-// Mirrors web/lib/shelf.ts in HQ: recorded kind first, then what the link says.
-function shelfGroup(doc: FloorDoc, link: string): HqShelfDoc["group"] {
-  const target = link.toLowerCase();
-  if (
-    doc.kind === "pr" ||
-    /github\.com\/[^/]+\/[^/]+\/pull\/\d+|graphite\.com\/github\/pr\//.test(target)
-  )
-    return "Pull requests";
-  if (doc.kind === "page" || target.endsWith(".html") || /notion\.(so|com)/.test(target))
-    return "Pages";
-  if (doc.kind === "md" || target.endsWith(".md")) return "Markdown";
-  return "Other links";
-}
-
-function parseShelf(room: FloorRoom): HqShelfDoc[] {
-  const desks = [...(room.desks ?? []), ...(room.lounge ?? [])];
-  const names = new Map(desks.map((desk) => [desk.uuid, desk.name ?? ""]));
-  const entries = [
-    ...desks.flatMap((desk) => (desk.docs ?? []).map((doc) => ({ doc, by: desk.name ?? "" }))),
-    ...(room.orphanDocs ?? []).map((doc) => ({ doc, by: names.get(doc.by) ?? "" })),
-  ];
-  const byTarget = new Map<string, HqShelfDoc>();
-  for (const { doc, by } of entries) {
-    const link = doc.href || doc.url || doc.ref || "";
-    const target = link.startsWith("/doc/") ? `/hq${link}` : /^https?:/.test(link) ? link : "";
-    const key = link || doc.name;
-    if (byTarget.has(key)) continue;
-    byTarget.set(key, {
-      name: doc.name,
-      target,
-      group: shelfGroup(doc, link),
-      by,
-      ts: doc.ts ?? "",
-      ...(doc.prStatus ? { prStatus: doc.prStatus } : {}),
-      ...(doc.localPath ? { localPath: doc.localPath } : {}),
-    });
-  }
-  return [...byTarget.values()].toSorted((a, b) => b.ts.localeCompare(a.ts));
+export function parseRoomsFeed(feed: readonly FeedRoom[]): HqRoom[] {
+  return feed.map((room) => ({
+    ...room,
+    threadIds: new Set(room.threadIds),
+    shelf: room.shelf.map(({ link, ...doc }) => ({
+      ...doc,
+      target: link.startsWith("/doc/") ? `/hq${link}` : /^https?:/.test(link) ? link : "",
+    })),
+  }));
 }
 
 const SELECTED_KEY = "hq:selected-room";
-// ponytail: polls HQ's full floor feed (~1.4 MB); a slim rooms→threads endpoint if this stays.
+// The feed carries an ETag, so an unchanged poll is a 304 and skips the parse.
 const POLL_MS = 30_000;
 
 let rooms: readonly HqRoom[] = [];
@@ -108,43 +63,24 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-export function parseFloorRooms(floor: readonly FloorRoom[]): HqRoom[] {
-  return floor.map((room) => ({
-    slug: room.slug,
-    label: room.label,
-    attention: room.attention ?? [],
-    zone: room.zone ?? "permanent",
-    shelf: parseShelf(room),
-    agents: room.desks?.length ?? 0,
-    threadIds: new Set(
-      [...(room.desks ?? []), ...(room.lounge ?? [])]
-        .map((desk) => desk.threadUrl?.split("/").filter(Boolean).at(-1))
-        .filter((id): id is string => Boolean(id)),
-    ),
-  }));
-}
-
 export type HqArchivedRoom = { slug: string; title: string; archivedAt: string };
 let archived: readonly HqArchivedRoom[] = [];
 
-async function getHq<T>(path: string): Promise<T | null> {
-  try {
-    const response = await fetch(path, { cache: "no-store" });
-    return response.ok ? ((await response.json()) as T) : null;
-  } catch {
-    return null;
-  }
-}
+let feedTag = "";
 
 async function refresh() {
-  const [floor, archive] = await Promise.all([
-    getHq<{ floor: FloorRoom[] }>("/hq/api/floor"),
-    getHq<{ archived: HqArchivedRoom[] }>("/hq/api/rooms"),
-  ]);
-  // HQ offline: keep the last rooms rather than flashing an empty bar.
-  if (floor) rooms = parseFloorRooms(floor.floor);
-  if (archive) archived = archive.archived;
-  emit();
+  try {
+    const response = await fetch("/hq/api/rooms", { cache: "no-cache" });
+    const tag = response.headers.get("etag") ?? "";
+    if (!response.ok || (tag && tag === feedTag)) return;
+    const feed = (await response.json()) as { rooms: FeedRoom[]; archived: HqArchivedRoom[] };
+    rooms = parseRoomsFeed(feed.rooms);
+    archived = feed.archived;
+    feedTag = tag;
+    emit();
+  } catch {
+    // HQ offline: keep the last rooms rather than flashing an empty bar.
+  }
 }
 
 async function postHq(path: string, body: unknown): Promise<string> {
