@@ -10,7 +10,7 @@ vi.hoisted(() => {
   } as Storage;
 });
 
-import { moveRoomOrder } from "./hqRooms";
+import { moveRoomOrder, parseRoomsFeed } from "./hqRooms";
 
 describe("moveRoomOrder", () => {
   const rooms = [
@@ -30,5 +30,32 @@ describe("moveRoomOrder", () => {
       permanent: [],
       backlog: [],
     });
+  });
+});
+
+describe("parseRoomsFeed", () => {
+  it("serves HQ documents through the /hq proxy and drops links it cannot open", () => {
+    const doc = { group: "Markdown", by: "", ts: "" } as const;
+    const [room] = parseRoomsFeed([
+      {
+        slug: "hq",
+        label: "HQ",
+        zone: "permanent",
+        attention: [],
+        agents: 1,
+        threadIds: ["t1"],
+        shelf: [
+          { ...doc, name: "reader", link: "/doc/room-document/1" },
+          { ...doc, name: "web", link: "https://example.com/a" },
+          { ...doc, name: "path", link: "", localPath: "/tmp/a.md" },
+        ],
+      },
+    ]);
+    expect(room?.threadIds.has("t1")).toBe(true);
+    expect(room?.shelf.map((entry) => entry.target)).toEqual([
+      "/hq/doc/room-document/1",
+      "https://example.com/a",
+      "",
+    ]);
   });
 });
