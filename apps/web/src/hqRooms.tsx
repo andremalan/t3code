@@ -102,13 +102,22 @@ function withPending(next: readonly HqRoom[]): readonly HqRoom[] {
   });
 }
 
+// A created room reaches HQ's floor (and so the feed) a minute or two later.
+const pendingRooms = new Map<string, { room: HqRoom; at: number }>();
+function withPendingRooms(next: readonly HqRoom[]): readonly HqRoom[] {
+  for (const [slug, { at }] of pendingRooms)
+    if (Date.now() - at > PENDING_MS || next.some((room) => room.slug === slug))
+      pendingRooms.delete(slug);
+  return [...next, ...[...pendingRooms.values()].map(({ room }) => room)];
+}
+
 async function refresh() {
   try {
     const response = await fetch("/hq/api/rooms", { cache: "no-cache" });
     const tag = response.headers.get("etag") ?? "";
     if (!response.ok || (tag && tag === feedTag)) return;
     const feed = (await response.json()) as { rooms: FeedRoom[]; archived: HqArchivedRoom[] };
-    rooms = withPending(parseRoomsFeed(feed.rooms));
+    rooms = withPending(withPendingRooms(parseRoomsFeed(feed.rooms)));
     archived = feed.archived;
     feedTag = tag;
     emit();
@@ -224,6 +233,49 @@ export async function replaceHqThread(slug: string, threadId: string, model: str
   rooms = withPending(rooms);
   emit();
   return result;
+}
+
+export const hqSlug = (title: string) =>
+  title
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 64)
+    .replace(/-$/, "");
+
+/** Creates an empty room at the end of a section; resolves to its slug. */
+export async function createHqRoom(title: string, outcome: string, zone: HqRoom["zone"]) {
+  const wanted = hqSlug(title);
+  if (!wanted) throw new Error("Give the room a name with letters or numbers.");
+  if (rooms.some((room) => room.slug === wanted))
+    throw new Error(`A room called ${wanted} already exists.`);
+  if (archived.some((room) => room.slug === wanted))
+    throw new Error(`An archived room is called ${wanted}; unarchive it or pick another name.`);
+  const { context } = await postHq<{ context: { room: { slug: string; title: string } } }>(
+    "/hq/api/room",
+    { slug: wanted, title, outcome, owner: "", state: "planned" },
+  );
+  const { slug } = context.room;
+  // HQ files an unordered room under Permanent; moving it from there records the order.
+  const room: HqRoom = {
+    slug,
+    label: context.room.title,
+    attention: [],
+    zone: "permanent",
+    agents: 0,
+    threadIds: new Set(),
+    shelf: [],
+  };
+  pendingRooms.set(slug, { room, at: Date.now() });
+  rooms = withPendingRooms(rooms);
+  emit();
+  const placed = await moveHqRoom(slug, zone).then(
+    () => zone,
+    () => room.zone,
+  );
+  pendingRooms.set(slug, { room: { ...room, zone: placed }, at: Date.now() });
+  return slug;
 }
 
 export async function archiveHqRoom(slug: string): Promise<string> {
