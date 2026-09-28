@@ -84,7 +84,10 @@ function RoomRouteView() {
           <div
             className={cn(
               "min-h-0 overflow-y-auto p-4 sm:p-6",
-              openDoc ? "w-[26rem] shrink-0 border-r border-border" : "mx-auto w-full max-w-3xl",
+              // A phone has no room for both: the open document takes the page.
+              openDoc
+                ? "hidden md:block md:w-[26rem] md:shrink-0 md:border-r md:border-border"
+                : "mx-auto w-full max-w-3xl",
             )}
           >
             {room === null ? (

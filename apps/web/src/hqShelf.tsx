@@ -97,16 +97,15 @@ export function HqDocReader(props: { doc: HqShelfDoc; onClose: () => void; back?
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="hq-doc-reader">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-sm">
-        {props.back ? (
-          <button
-            type="button"
-            aria-label="Back to shelf"
-            className="text-muted-foreground hover:text-foreground"
-            onClick={props.onClose}
-          >
-            <ArrowLeftIcon className="size-4" />
-          </button>
-        ) : null}
+        {/* Beside the shelf (desktop) it closes with X; alone on a phone, back returns to it. */}
+        <button
+          type="button"
+          aria-label="Back to shelf"
+          className={cn("text-muted-foreground hover:text-foreground", !props.back && "md:hidden")}
+          onClick={props.onClose}
+        >
+          <ArrowLeftIcon className="size-4" />
+        </button>
         <span className="min-w-0 flex-1 truncate font-medium">{props.doc.name}</span>
         <a
           href={props.doc.target}
@@ -121,7 +120,7 @@ export function HqDocReader(props: { doc: HqShelfDoc; onClose: () => void; back?
           <button
             type="button"
             aria-label="Close document"
-            className="text-muted-foreground hover:text-foreground"
+            className="hidden text-muted-foreground hover:text-foreground md:block"
             onClick={props.onClose}
           >
             <XIcon className="size-4" />
