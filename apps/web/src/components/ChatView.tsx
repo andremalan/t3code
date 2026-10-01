@@ -9631,7 +9631,7 @@ export default function ChatView(props: ChatViewProps) {
     ) : renderedRightPanelSurface?.kind === "pull-requests" && activeThreadRef ? (
       <ThreadPullRequestsPanel threadRef={activeThreadRef} />
     ) : renderedRightPanelSurface?.kind === "shelf" ? (
-      <HqShelfPanel threadId={activeThreadRef?.threadId ?? null} />
+      <HqShelfPanel threadRef={activeThreadRef ?? null} />
     ) : renderedRightPanelSurface?.kind === "agents" ? (
       <AgentsPanel
         model={agentPanelModel}

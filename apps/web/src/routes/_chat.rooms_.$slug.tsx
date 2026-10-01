@@ -1,5 +1,5 @@
 // HQ Rooms spike: one room's page. Visiting it filters the sidebar to the room;
-// it lists the room's threads and shelf, and reads HQ documents in place.
+// it lists the room's threads and shelf. Shelf files open in a room thread's file preview.
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 
@@ -15,42 +15,34 @@ import {
   useHqRooms,
   useOpenHqRoom,
 } from "../hqRooms";
-import { HqDocReader, HqShelfList } from "../hqShelf";
+import { HqShelfList } from "../hqShelf";
 import { cn } from "../lib/utils";
 import { useThreadShells } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
-
-type RoomSearch = { doc?: string };
 
 const relative = (ms: number) => formatRelativeTimeLabel(new Date(ms).toISOString());
 
 function RoomRouteView() {
   const { slug } = Route.useParams();
-  const { doc } = Route.useSearch();
   const navigate = useNavigate();
   const openRoom = useOpenHqRoom();
   const { rooms } = useHqRooms();
   const threads = useThreadShells();
   const room = rooms.find((candidate) => candidate.slug === slug) ?? null;
   const roomThreads = useMemo(() => (room ? hqRoomThreads(room, threads) : []), [room, threads]);
-  const openDoc = room?.shelf.find((entry) => entry.target === doc) ?? null;
+  const threadRefs = useMemo(
+    () =>
+      roomThreads.map((thread) => ({ environmentId: thread.environmentId, threadId: thread.id })),
+    [roomThreads],
+  );
   const [status, setStatus] = useState("");
 
   useEffect(() => selectHqRoom(slug), [slug]);
 
-  const setDoc = (target: string | undefined) =>
-    void navigate({
-      to: "/rooms/$slug",
-      params: { slug },
-      search: target ? { doc: target } : {},
-      replace: true,
-    });
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      if (doc) setDoc(undefined);
-      else void navigate({ to: "/rooms" });
+      void navigate({ to: "/rooms" });
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -71,16 +63,8 @@ function RoomRouteView() {
             </span>
           ) : null}
         </WorkspacePageHeader>
-        <div className="flex min-h-0 flex-1">
-          <div
-            className={cn(
-              "min-h-0 overflow-y-auto p-4 sm:p-6",
-              // A phone has no room for both: the open document takes the page.
-              openDoc
-                ? "hidden md:block md:w-[26rem] md:shrink-0 md:border-r md:border-border"
-                : "mx-auto w-full max-w-3xl",
-            )}
-          >
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
             {room === null ? (
               <p className="text-sm text-muted-foreground">
                 {rooms.length === 0 ? "Loading rooms…" : "HQ has no room with this name."}
@@ -121,11 +105,10 @@ function RoomRouteView() {
                     );
                   })}
                 </ul>
-                <HqShelfList shelf={room.shelf} reading={doc} onRead={setDoc} />
+                <HqShelfList slug={slug} threads={threadRefs} />
               </>
             )}
           </div>
-          {openDoc ? <HqDocReader doc={openDoc} onClose={() => setDoc(undefined)} /> : null}
         </div>
       </div>
     </SidebarInset>
@@ -133,7 +116,5 @@ function RoomRouteView() {
 }
 
 export const Route = createFileRoute("/_chat/rooms_/$slug")({
-  validateSearch: (raw: Record<string, unknown>): RoomSearch =>
-    typeof raw.doc === "string" && raw.doc.startsWith("/hq/") ? { doc: raw.doc } : {},
   component: RoomRouteView,
 });

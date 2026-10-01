@@ -15,7 +15,8 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as Rooms from "./Rooms.ts";
 
-const testLayer = Layer.mergeAll(Rooms.layer, NodeServices.layer).pipe(
+const testLayer = Rooms.layer.pipe(
+  Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(SqlitePersistenceMemory),
 );
 
@@ -67,7 +68,7 @@ it.effect("orders, archives and fills rooms", () =>
   }).pipe(Effect.provide(testLayer)),
 );
 
-it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
+it.effect("imports HQ rooms and shelves, resolving members to live T3 threads", () =>
   Effect.gen(function* () {
     const stateDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "hq-import-"));
     NodeFS.mkdirSync(NodePath.join(stateDir, "config"));
@@ -76,11 +77,19 @@ it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
       // @effect-diagnostics-next-line preferSchemaOverJson:off
       JSON.stringify({ today: ["dex"], permanent: [], backlog: ["old"] }),
     );
+    const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "hq-worktree-"));
+    NodeFS.mkdirSync(NodePath.join(worktree, "cc", "dex", "shots"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(worktree, "cc", "dex", "notes.md"), "# Notes");
+    NodeFS.writeFileSync(NodePath.join(worktree, "cc", "dex", "shots", "a.png"), "");
+    NodeFS.writeFileSync(NodePath.join(worktree, "cc", "dex", ".hidden"), "");
     const hq = new NodeSqlite.DatabaseSync(NodePath.join(stateDir, "hq.sqlite"));
     hq.exec(`
       CREATE TABLE rooms (id TEXT, slug TEXT, title TEXT, created_at TEXT, archived_at TEXT);
       CREATE TABLE room_work (room_id TEXT, outcome TEXT);
       CREATE TABLE room_members (room_id TEXT, session_uuid TEXT, attached_at TEXT);
+      CREATE TABLE room_documents (
+        room_id TEXT, title TEXT, ref TEXT, kind TEXT, author_id TEXT, created_at TEXT
+      );
       INSERT INTO rooms VALUES
         ('1', 'dex', 'Dex', '2026-01-01', NULL),
         ('2', 'old', 'Old', '2026-01-02', '2026-02-01'),
@@ -91,6 +100,10 @@ it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
         ('1', 'codex-session', '2026-01-05'),
         ('1', 'cmux-session', '2026-01-05'),
         ('2', 'deleted-session', '2026-01-05');
+      INSERT INTO room_documents VALUES
+        ('1', 'Old title', 'https://github.com/KIdentify/HQ/pull/7', 'pr', 'codex-session', '2026-01-06'),
+        ('1', 'gone.md', '/nonexistent/gone.md', 'md', 'claude-session', '2026-01-06'),
+        ('1', 'Notes', '${worktree}/cc/dex/notes.md', 'md', '', '2000-01-01');
     `);
     hq.close();
 
@@ -102,6 +115,14 @@ it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
         ('thread-codex', 'p', 'Codex', '2026-01-01', '2026-01-01', NULL),
         ('thread-deleted', 'p', 'Gone', '2026-01-01', '2026-01-01', '2026-01-09')
     `;
+    yield* sql`UPDATE projection_threads SET worktree_path = ${worktree} WHERE thread_id = 'thread-claude'`;
+    yield* sql`
+      INSERT INTO projection_thread_pull_requests
+        (thread_id, host, repository, number, url, source, linked_at, snapshot_json)
+      VALUES ('thread-codex', 'github.com', 'kidentify/hq', 7,
+        'https://github.com/kidentify/hq/pull/7', 'agent', '2026-01-07',
+        '{"state":"open","isDraft":true,"title":"Live title"}')
+    `;
     yield* sql`
       INSERT INTO provider_session_runtime
         (thread_id, provider_name, adapter_key, status, last_seen_at, resume_cursor_json)
@@ -112,9 +133,9 @@ it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
     `;
 
     const first = yield* Rooms.importHqRooms(stateDir);
-    assert.deepStrictEqual(first, { rooms: 3, threads: 2, skippedMembers: 2 });
+    assert.deepStrictEqual(first, { rooms: 3, threads: 2, skippedMembers: 2, documents: 2 });
     const again = yield* Rooms.importHqRooms(stateDir);
-    assert.deepStrictEqual(again, { rooms: 0, threads: 0, skippedMembers: 2 });
+    assert.deepStrictEqual(again, { rooms: 0, threads: 0, skippedMembers: 2, documents: 0 });
 
     const rooms = yield* Rooms.Rooms;
     const [current] = yield* rooms.stream.pipe(Stream.take(1), Stream.runCollect);
@@ -123,5 +144,40 @@ it.effect("imports HQ rooms, resolving members to live T3 threads", () =>
     assert.strictEqual(dex.outcome, "Ship Dex");
     assert.deepStrictEqual([...dex.threadIds].toSorted(), ["thread-claude", "thread-codex"]);
     assert.isNotNull(current!.find((room) => room.slug === "old")!.archivedAt);
+
+    // Recorded, scanned and linked entries merge by ref; the missing file is dropped.
+    const shelf = yield* rooms.shelf("dex");
+    assert.deepStrictEqual(
+      shelf.map(({ ref, title, kind, threadId, prState }) => ({
+        ref,
+        title,
+        kind,
+        threadId,
+        prState,
+      })),
+      [
+        {
+          ref: `${worktree}/cc/dex/shots/a.png`,
+          title: "shots/a.png",
+          kind: "png",
+          threadId: ThreadId.make("thread-claude"),
+          prState: undefined,
+        },
+        {
+          ref: "https://app.graphite.com/github/pr/kidentify/hq/7",
+          title: "Live title",
+          kind: "pr",
+          threadId: ThreadId.make("thread-codex"),
+          prState: "draft",
+        },
+        {
+          ref: `${worktree}/cc/dex/notes.md`,
+          title: "Notes",
+          kind: "md",
+          threadId: ThreadId.make("thread-claude"),
+          prState: undefined,
+        },
+      ],
+    );
   }).pipe(Effect.provide(testLayer)),
 );

@@ -1,5 +1,5 @@
-// HQ Rooms: rooms live on the primary T3 server and filter the sidebar by thread id. The shelf
-// still comes from the local HQ app (proxied at /hq) until it moves too. Selection is a local
+// HQ Rooms: rooms and their shelves live on the primary T3 server; rooms filter the sidebar by
+// thread id. Replace still goes through the local HQ app (proxied at /hq). Selection is a local
 // preference; /rooms picks it.
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -11,6 +11,8 @@ import type {
   EnvironmentId,
   RoomList,
   RoomSection,
+  RoomShelfDoc,
+  ScopedThreadRef,
   SidebarThreadSortOrder,
 } from "@t3tools/contracts";
 import { ROOM_SECTIONS, ThreadId } from "@t3tools/contracts";
@@ -33,9 +35,11 @@ import {
 import { cn } from "~/lib/utils";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
+import { useRightPanelStore } from "~/rightPanelStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { roomsEnvironment } from "~/state/rooms";
+import { useEnvironmentQuery } from "~/state/query";
 import { environmentServerConfigsAtom } from "~/state/server";
 import type { SidebarThreadSummary } from "~/types";
 
@@ -44,47 +48,24 @@ export type HqRoom = {
   label: string;
   zone: RoomSection;
   threadIds: ReadonlySet<string>;
-  /** Newest first. */
-  shelf: readonly HqShelfDoc[];
 };
 
-export const HQ_SHELF_GROUPS = ["Pull requests", "Pages", "Markdown", "Other links"] as const;
-export type HqShelfDoc = {
-  name: string;
-  /** Same-origin `/hq/doc/...` reader URL, an external URL, or "" when HQ can't serve it. */
-  target: string;
-  group: (typeof HQ_SHELF_GROUPS)[number];
-  by: string;
-  ts: string;
-  prStatus?: string;
-  localPath?: string;
-};
+export const HQ_SHELF_GROUPS = ["Pull requests", "Pages", "Markdown", "Other"] as const;
+export type HqShelfGroup = (typeof HQ_SHELF_GROUPS)[number];
 
-/** The shelf part of HQ's GET /api/rooms feed (web/lib/rooms-feed.ts). */
-type FeedRoom = {
-  slug: string;
-  shelf: Array<Omit<HqShelfDoc, "target"> & { link: string }>;
-};
-
-export function parseShelfFeed(feed: readonly FeedRoom[]): ReadonlyMap<string, HqShelfDoc[]> {
-  return new Map(
-    feed.map((room) => [
-      room.slug,
-      room.shelf.map(({ link, ...doc }) => ({
-        ...doc,
-        target: link.startsWith("/doc/") ? `/hq${link}` : /^https?:/.test(link) ? link : "",
-      })),
-    ]),
-  );
+/** HQ's shelf groups (web/lib/shelf.ts), by recorded kind or by the ref's shape. */
+export function shelfGroup(doc: Pick<RoomShelfDoc, "ref" | "kind">): HqShelfGroup {
+  const ref = doc.ref.toLowerCase();
+  if (doc.kind === "pr" || /\/pull\/\d+|\/github\/pr\//.test(ref)) return "Pull requests";
+  if (doc.kind === "page" || ref.endsWith(".html") || /notion\.(so|com)\//.test(ref))
+    return "Pages";
+  if (doc.kind === "md" || ref.endsWith(".md")) return "Markdown";
+  return "Other";
 }
 
 export type HqArchivedRoom = { slug: string; title: string; archivedAt: string };
 
 const EMPTY_ROOMS: RoomList = [];
-const shelvesAtom = Atom.make<ReadonlyMap<string, HqShelfDoc[]>>(new Map()).pipe(
-  Atom.keepAlive,
-  Atom.withLabel("hq-shelves"),
-);
 
 /** Every room on the primary server, archived ones included; empty on servers without rooms. */
 const roomListAtom = Atom.make((get): RoomList => {
@@ -99,7 +80,6 @@ const roomListAtom = Atom.make((get): RoomList => {
 }).pipe(Atom.withLabel("hq-room-list"));
 
 const roomsAtom = Atom.make((get) => {
-  const shelves = get(shelvesAtom);
   const list = get(roomListAtom);
   return {
     rooms: list
@@ -109,7 +89,6 @@ const roomsAtom = Atom.make((get) => {
         label: room.title,
         zone: room.section,
         threadIds: new Set(room.threadIds),
-        shelf: shelves.get(room.slug) ?? [],
       })),
     archived: list
       .flatMap((room): HqArchivedRoom[] =>
@@ -122,8 +101,6 @@ const roomsAtom = Atom.make((get) => {
 }).pipe(Atom.withLabel("hq-rooms"));
 
 const SELECTED_KEY = "hq:selected-room";
-// The feed carries an ETag, so an unchanged poll is a 304 and skips the parse.
-const POLL_MS = 30_000;
 
 let selected: string | null = localStorage.getItem(SELECTED_KEY);
 const listeners = new Set<() => void>();
@@ -131,20 +108,6 @@ const subscribe = (listener: () => void) => {
   listeners.add(listener);
   return () => listeners.delete(listener);
 };
-
-let feedTag = "";
-async function refreshShelves() {
-  try {
-    const response = await fetch("/hq/api/rooms", { cache: "no-cache" });
-    const tag = response.headers.get("etag") ?? "";
-    if (!response.ok || (tag && tag === feedTag)) return;
-    const feed = (await response.json()) as { rooms: FeedRoom[] };
-    appAtomRegistry.set(shelvesAtom, parseShelfFeed(feed.rooms));
-    feedTag = tag;
-  } catch {
-    // HQ offline: keep the last shelves rather than flashing them empty.
-  }
-}
 
 async function postHq<T = {}>(path: string, body: unknown): Promise<T> {
   const response = await fetch(path, {
@@ -255,16 +218,30 @@ export async function unarchiveHqRoom(slug: string) {
   await runRooms(roomsEnvironment.update, { slug, archived: false });
 }
 
-let pollers = 0;
-function useShelfPolling() {
-  useEffect(() => {
-    if (pollers++ === 0) void refreshShelves();
-    const timer = window.setInterval(() => void refreshShelves(), POLL_MS);
-    return () => {
-      pollers--;
-      window.clearInterval(timer);
-    };
-  }, []);
+/** A room's shelf, newest first; read when shown, never pushed. */
+export function useRoomShelf(slug: string | null) {
+  const environmentId = useAtomValue(primaryEnvironmentIdAtom);
+  return useEnvironmentQuery(
+    slug && environmentId ? roomsEnvironment.shelf({ environmentId, input: { slug } }) : null,
+  );
+}
+
+/**
+ * Links open a tab. Files open in a thread's file preview: the doc's own thread when it is among
+ * `threads`, else the first of them.
+ */
+export function useOpenShelfDoc() {
+  const navigate = useNavigate();
+  return (doc: RoomShelfDoc, threads: readonly ScopedThreadRef[]) => {
+    if (!doc.ref.startsWith("/")) {
+      window.open(doc.ref, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const thread = threads.find((each) => each.threadId === doc.threadId) ?? threads[0];
+    if (!thread) return;
+    useRightPanelStore.getState().openFile(thread, doc.ref);
+    void navigate({ to: "/$environmentId/$threadId", params: thread });
+  };
 }
 
 export function selectHqRoom(slug: string | null) {
@@ -275,7 +252,6 @@ export function selectHqRoom(slug: string | null) {
 }
 
 export function useHqRooms() {
-  useShelfPolling();
   const { rooms, archived } = useAtomValue(roomsAtom);
   const selectedSlug = useSyncExternalStore(subscribe, () => selected);
   const selectedRoom = rooms.find((room) => room.slug === selectedSlug) ?? null;
