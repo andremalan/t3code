@@ -5,8 +5,10 @@
 set -e
 cd "$(git rev-parse --show-toplevel)"
 pnpm() { mise exec node@24.18.0 -- npx -y pnpm@11.10.0 "$@"; }
+desktop=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' "$HOME/.t3/userdata/server-runtime.json" 2>/dev/null)
+T3CODE_PORT="${T3CODE_PORT:-${desktop:-3773}}"
 
-version=$(curl -fsS "http://127.0.0.1:${T3CODE_PORT:-3773}/.well-known/t3/environment" |
+version=$(curl -fsS "http://127.0.0.1:$T3CODE_PORT/.well-known/t3/environment" |
   node -pe 'JSON.parse(require("fs").readFileSync(0, "utf8")).serverVersion')
 target="v$version"
 git fetch -q origin
@@ -28,7 +30,7 @@ pnpm --dir apps/web exec vp test run --project unit src/hqRooms.test.ts
 pnpm --dir apps/web exec tsc --noEmit -p .
 # Build to a scratch directory: the running :5799 server serves apps/web/dist.
 out=$(mktemp -d)
-T3CODE_PORT="${T3CODE_PORT:-3773}" T3CODE_SINGLE_ORIGIN_DEV=1 APP_VERSION="$version" pnpm --dir apps/web exec vp build --outDir "$out" --emptyOutDir
+T3CODE_PORT="$T3CODE_PORT" T3CODE_SINGLE_ORIGIN_DEV=1 APP_VERSION="$version" pnpm --dir apps/web exec vp build --outDir "$out" --emptyOutDir
 rm -rf "$out"
 git checkout -q pnpm-lock.yaml
 git push -q --force-with-lease origin HEAD:main
