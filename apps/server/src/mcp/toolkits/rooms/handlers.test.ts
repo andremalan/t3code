@@ -135,9 +135,14 @@ describe("rooms toolkit handlers", () => {
         });
         const missing = yield* call("shelf_add", { ref: "nope.md" }).pipe(Effect.flip);
         expect(missing.message).toContain("no file");
-        expect(
-          yield* call("shelf_add", { ref: "https://github.com/KIdentify/HQ/pull/7", title: "Fix" }),
-        ).toMatchObject({ ref: "https://app.graphite.com/github/pr/kidentify/hq/7", kind: "pr" });
+        const pullRequest = yield* call("shelf_add", {
+          ref: "https://github.com/KIdentify/HQ/pull/7",
+        }).pipe(Effect.flip);
+        expect(pullRequest.message).toContain("link_pull_request");
+        expect(yield* call("shelf_add", { ref: "https://example.com/spec" })).toMatchObject({
+          title: "https://example.com/spec",
+          kind: "link",
+        });
 
         const context = yield* call("room_context", {});
         expect(context.otherRooms).toEqual([{ slug: "other", title: "Other" }]);
