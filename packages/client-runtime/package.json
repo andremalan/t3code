@@ -187,6 +187,10 @@
       "types": "./src/state/review.ts",
       "default": "./src/state/review.ts"
     },
+    "./state/rooms": {
+      "types": "./src/state/rooms.ts",
+      "default": "./src/state/rooms.ts"
+    },
     "./state/runtime": {
       "types": "./src/state/runtime.ts",
       "default": "./src/state/runtime.ts"

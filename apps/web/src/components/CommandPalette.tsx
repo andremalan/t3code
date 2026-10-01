@@ -99,7 +99,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
-import { HQ_ATTENTION_LABELS, hqRoomThreads, useHqRooms, useOpenHqRoom } from "../hqRooms";
+import { hqRoomThreads, useHqRooms, useOpenHqRoom } from "../hqRooms";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -2129,18 +2129,15 @@ function OpenCommandPaletteDialog(props: {
   // HQ Rooms spike: a room opens its page (which filters the sidebar); "All threads"
   // clears the filter. Shelf documents open in the room page's reader.
   const roomSearchItems: CommandPaletteActionItem[] = [null, ...hqRooms].map((room) => {
-    const flags = (room?.attention ?? []).map((flag) => HQ_ATTENTION_LABELS[flag] ?? flag);
     return {
       kind: "action",
       value: `room:${room?.slug ?? "all"}`,
       searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
       title: room?.label ?? "All threads",
       description: room
-        ? [
-            `${hqRoomThreads(room, threads).length} threads`,
-            `${room.shelf.length} on shelf`,
-            ...flags,
-          ].join(" · ")
+        ? [`${hqRoomThreads(room, threads).length} threads`, `${room.shelf.length} on shelf`].join(
+            " · ",
+          )
         : "Clear the room filter",
       icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
       run: async () => {

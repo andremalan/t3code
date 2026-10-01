@@ -282,6 +282,15 @@ import {
   SourceControlRepositoryLookupInput,
 } from "./sourceControl.ts";
 import { VcsError } from "./vcs.ts";
+import {
+  Room,
+  RoomCreateInput,
+  RoomList,
+  RoomReorderInput,
+  RoomSetThreadInput,
+  RoomsError,
+  RoomUpdateInput,
+} from "./rooms.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -441,6 +450,13 @@ export const WS_METHODS = {
   projectCloneCancel: "projectClone.cancel",
   projectCloneRetry: "projectClone.retry",
   subscribeProjectClones: "subscribeProjectClones",
+
+  // HQ fork: rooms
+  roomsCreate: "rooms.create",
+  roomsUpdate: "rooms.update",
+  roomsReorder: "rooms.reorder",
+  roomsSetThread: "rooms.setThread",
+  subscribeRooms: "subscribeRooms",
 
   // Streaming subscriptions
   subscribeVcsStatus: "subscribeVcsStatus",
@@ -951,6 +967,39 @@ const WsProjectCloneRetryRpc = Rpc.make(WS_METHODS.projectCloneRetry, {
 const WsSubscribeProjectClonesRpc = Rpc.make(WS_METHODS.subscribeProjectClones, {
   payload: ProjectCloneSubscribeInput,
   success: ProjectCloneListEvent,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+const RoomsRpcError = Schema.Union([RoomsError, EnvironmentAuthorizationError]);
+
+const WsRoomsCreateRpc = Rpc.make(WS_METHODS.roomsCreate, {
+  payload: RoomCreateInput,
+  success: Room,
+  error: RoomsRpcError,
+});
+
+const WsRoomsUpdateRpc = Rpc.make(WS_METHODS.roomsUpdate, {
+  payload: RoomUpdateInput,
+  success: Room,
+  error: RoomsRpcError,
+});
+
+const WsRoomsReorderRpc = Rpc.make(WS_METHODS.roomsReorder, {
+  payload: RoomReorderInput,
+  success: Schema.Struct({}),
+  error: RoomsRpcError,
+});
+
+const WsRoomsSetThreadRpc = Rpc.make(WS_METHODS.roomsSetThread, {
+  payload: RoomSetThreadInput,
+  success: Schema.Struct({}),
+  error: RoomsRpcError,
+});
+
+const WsSubscribeRoomsRpc = Rpc.make(WS_METHODS.subscribeRooms, {
+  payload: Schema.Struct({}),
+  success: RoomList,
   error: EnvironmentAuthorizationError,
   stream: true,
 });
@@ -1504,6 +1553,11 @@ export const WsRpcGroup = RpcGroup.make(
   WsProjectCloneCancelRpc,
   WsProjectCloneRetryRpc,
   WsSubscribeProjectClonesRpc,
+  WsRoomsCreateRpc,
+  WsRoomsUpdateRpc,
+  WsRoomsReorderRpc,
+  WsRoomsSetThreadRpc,
+  WsSubscribeRoomsRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,
   WsProjectsSearchContentsRpc,

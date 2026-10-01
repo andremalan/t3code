@@ -24,7 +24,6 @@ import { useThreadActions } from "../hooks/useThreadActions";
 import {
   archiveHqRoom,
   createHqRoom,
-  HQ_ATTENTION_LABELS,
   type HqRoom,
   hqRoomThreads,
   hqUnroomedThreads,
@@ -46,9 +45,7 @@ const PREVIEW_THREADS = 4;
 type RoomCard = {
   slug: string | null;
   label: string;
-  attention: readonly string[];
   zone: HqRoom["zone"];
-  agents: number;
   shelf: number;
   threads: SidebarThreadSummary[];
   latestMs: number;
@@ -118,9 +115,7 @@ function RoomsRouteView() {
       return {
         slug: room.slug as string | null,
         label: room.label,
-        attention: room.attention,
         zone: room.zone,
-        agents: room.agents,
         shelf: room.shelf.length,
         threads: roomThreads,
         latestMs: roomThreads[0] ? threadActivityMs(roomThreads[0]) : 0,
@@ -130,14 +125,12 @@ function RoomsRouteView() {
     const all: RoomCard = {
       slug: null,
       label: "All threads",
-      attention: [],
       zone: "today",
-      agents: 0,
       shelf: 0,
       threads: allThreads,
       latestMs: allThreads[0] ? threadActivityMs(allThreads[0]) : 0,
     };
-    // HQ's room order, which dragging sets.
+    // The server's room order, which dragging sets.
     return ZONES.map(([zone, title]) => ({
       zone,
       title,
@@ -246,18 +239,9 @@ function RoomsRouteView() {
                       >
                         <span className="flex items-center gap-2">
                           <span className="truncate font-medium">{card.label}</span>
-                          {card.attention.map((flag) => (
-                            <span
-                              key={flag}
-                              className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
-                            >
-                              {HQ_ATTENTION_LABELS[flag] ?? flag}
-                            </span>
-                          ))}
                         </span>
                         <span className="text-xs text-muted-foreground">
                           {card.threads.length} threads
-                          {card.agents > 0 ? ` · ${card.agents} seated` : ""}
                           {card.shelf > 0 ? ` · ${card.shelf} on shelf` : ""}
                           {card.latestMs > 0
                             ? ` · ${formatRelativeTimeLabel(new Date(card.latestMs).toISOString())}`

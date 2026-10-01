@@ -8,7 +8,6 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import {
-  HQ_ATTENTION_LABELS,
   hqRoomThreads,
   HqThreadActions,
   selectHqRoom,
@@ -66,14 +65,6 @@ function RoomRouteView() {
           </Link>
           <span className="text-sm text-muted-foreground">/</span>
           <span className="text-sm font-medium">{room?.label ?? slug}</span>
-          {room?.attention.map((flag) => (
-            <span
-              key={flag}
-              className="rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300"
-            >
-              {HQ_ATTENTION_LABELS[flag] ?? flag}
-            </span>
-          ))}
           {status ? (
             <span role="status" className="ml-auto text-xs text-muted-foreground">
               {status}
