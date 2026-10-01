@@ -19,7 +19,14 @@ import { ROOM_SECTIONS, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { CheckIcon, LayoutGridIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  LayoutGridIcon,
+  PlusIcon,
+  RefreshCwIcon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -32,6 +39,19 @@ import {
   DialogPopup,
   DialogTitle,
 } from "~/components/ui/dialog";
+import {
+  Menu,
+  MenuGroup,
+  MenuGroupLabel,
+  MenuItem,
+  MenuPopup,
+  MenuRadioGroup,
+  MenuRadioItem,
+  MenuSeparator,
+  MenuTrigger,
+} from "~/components/ui/menu";
+import { ComposerControl } from "~/components/chat/ComposerControl";
+import { useComposerMenuProps } from "~/components/chat/composerEventScope";
 import { cn } from "~/lib/utils";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
@@ -140,6 +160,11 @@ async function runRooms<I, A, E>(
 }
 
 export const HQ_ZONES = ROOM_SECTIONS;
+export const HQ_ZONE_TITLES = [
+  ["today", "Today"],
+  ["permanent", "Permanent"],
+  ["backlog", "Backlog"],
+] as const satisfies ReadonlyArray<readonly [RoomSection, string]>;
 
 /** The room order after moving one room before another, or to the end of a section. */
 export function moveRoomOrder(
@@ -424,6 +449,86 @@ export function HqRoomsLink({ onBackdrop }: { onBackdrop: boolean }) {
   );
 }
 
+// Drafts already defaulted to the sidebar's room, so choosing "No room" sticks.
+const defaultedDrafts = new Set<string>();
+
+/**
+ * Composer strip control: the room this thread works in. Picking one moves the thread there (a
+ * thread normally sits in one room). A new draft joins the room the sidebar is filtered to; its
+ * thread keeps the draft's id, so membership is set before the first send.
+ */
+export function HqRoomPicker({ threadId, isDraft }: { threadId: string; isDraft: boolean }) {
+  const { rooms, selectedSlug } = useHqRooms();
+  const menuProps = useComposerMenuProps();
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState("");
+  const current = rooms.filter((room) => room.threadIds.has(threadId));
+  const roomsLoaded = rooms.length > 0;
+
+  useEffect(() => {
+    if (!isDraft || !selectedSlug || !roomsLoaded || defaultedDrafts.has(threadId)) return;
+    defaultedDrafts.add(threadId);
+    if (current.length === 0) void setHqThreadRoom(selectedSlug, threadId, true);
+  }, [current.length, isDraft, roomsLoaded, selectedSlug, threadId]);
+
+  const moveTo = (slug: string | null) => {
+    setError("");
+    Promise.all([
+      ...current
+        .filter((room) => room.slug !== slug)
+        .map((room) => setHqThreadRoom(room.slug, threadId, false)),
+      ...(slug && !current.some((room) => room.slug === slug)
+        ? [setHqThreadRoom(slug, threadId, true)]
+        : []),
+    ]).catch((failure: unknown) =>
+      setError(failure instanceof Error ? failure.message : String(failure)),
+    );
+  };
+
+  if (!roomsLoaded) return null;
+  const label = current.map((room) => room.label).join(", ") || "No room";
+  return (
+    <>
+      <Menu>
+        <MenuTrigger
+          render={<ComposerControl size="xs" />}
+          className="min-w-0 max-w-[30%] flex-initial justify-start"
+          aria-label="Room"
+          data-composer-context-control
+        >
+          <LayoutGridIcon className="size-3 shrink-0" />
+          <span className={cn("min-w-0 truncate", error && "text-destructive")}>
+            {error ? "Room change failed" : label}
+          </span>
+          <ChevronDownIcon className="size-3 shrink-0 opacity-50" />
+        </MenuTrigger>
+        <MenuPopup align="start" side="top" className="max-h-80" {...menuProps}>
+          <MenuGroup>
+            <MenuGroupLabel>Room</MenuGroupLabel>
+            <MenuRadioGroup
+              value={current.length === 1 ? current[0]!.slug : current.length === 0 ? "" : null}
+              onValueChange={(value: string) => moveTo(value || null)}
+            >
+              {rooms.map((room) => (
+                <MenuRadioItem key={room.slug} value={room.slug}>
+                  {room.label}
+                </MenuRadioItem>
+              ))}
+              <MenuRadioItem value="">No room</MenuRadioItem>
+            </MenuRadioGroup>
+          </MenuGroup>
+          <MenuSeparator />
+          <MenuItem onClick={() => setCreating(true)}>
+            <PlusIcon className="size-3" />
+            New room…
+          </MenuItem>
+        </MenuPopup>
+      </Menu>
+      {creating ? <HqNewRoomDialog onClose={() => setCreating(false)} onCreated={moveTo} /> : null}
+    </>
+  );
+}
+
 /** Hover actions for a thread row in a room. Put inside a relative `group/row` element. */
 export function HqThreadActions({
   slug,
@@ -545,6 +650,99 @@ function HqReplaceDialog({
             </Button>
             <Button type="submit" disabled={busy}>
               {busy ? "Starting…" : "Replace"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
+/** Creates a room; `onCreated` gets its slug. */
+export function HqNewRoomDialog(props: { onClose: () => void; onCreated: (slug: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <Dialog open onOpenChange={(open) => !open && !busy && props.onClose()}>
+      <DialogPopup className="sm:max-w-sm">
+        <form
+          className="flex min-h-0 flex-col"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const data = new FormData(event.currentTarget);
+            setBusy(true);
+            setError("");
+            createHqRoom(
+              String(data.get("name")).trim(),
+              String(data.get("outcome") ?? "").trim(),
+              data.get("zone") as RoomSection,
+            ).then(
+              (slug) => {
+                props.onClose();
+                props.onCreated(slug);
+              },
+              (failure: unknown) => {
+                setBusy(false);
+                setError(failure instanceof Error ? failure.message : String(failure));
+              },
+            );
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>New room</DialogTitle>
+            <DialogDescription>
+              Creates an empty room. Add threads from the composer or the rooms overview.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel className="flex flex-col gap-3 text-sm">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">Name</span>
+              <input
+                name="name"
+                required
+                maxLength={120}
+                autoFocus
+                disabled={busy}
+                className="h-8 rounded-md border border-input bg-background px-2"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">Outcome (optional)</span>
+              <textarea
+                name="outcome"
+                maxLength={500}
+                rows={3}
+                disabled={busy}
+                className="rounded-md border border-input bg-background px-2 py-1"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">Section</span>
+              <select
+                name="zone"
+                defaultValue="today"
+                disabled={busy}
+                className="h-8 rounded-md border border-input bg-background px-2"
+              >
+                {HQ_ZONE_TITLES.map(([zone, title]) => (
+                  <option key={zone} value={zone}>
+                    {title}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {error ? (
+              <p role="alert" className="text-xs text-destructive">
+                {error}
+              </p>
+            ) : null}
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={busy}>
+              {busy ? "Creating…" : "Create room"}
             </Button>
           </DialogFooter>
         </form>
