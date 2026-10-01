@@ -68,6 +68,10 @@ function RoomsRouteView() {
   const [showArchived, setShowArchived] = useState(false);
   const [creating, setCreating] = useState(false);
   const { settleThread } = useThreadActions();
+  const settle = (thread: SidebarThreadSummary) =>
+    void settleThread(scopeThreadRef(thread.environmentId, thread.id)).then(
+      (result) => result._tag === "Success" || setStatus("Could not settle that thread."),
+    );
 
   const act = (work: Promise<string | void>) => {
     setStatus("");
@@ -292,6 +296,7 @@ function RoomsRouteView() {
                                 <HqThreadActions
                                   slug={card.slug}
                                   thread={thread}
+                                  onSettle={() => settle(thread)}
                                   onStatus={setStatus}
                                 />
                               ) : null}
@@ -404,12 +409,7 @@ function RoomsRouteView() {
                       aria-label="Settle thread"
                       title="Settle thread"
                       className="pointer-events-none absolute inset-y-0 right-1 my-auto flex h-6 items-center rounded bg-accent px-1.5 text-muted-foreground opacity-0 group-hover/row:pointer-events-auto group-hover/row:opacity-100 hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100"
-                      onClick={() =>
-                        void settleThread(scopeThreadRef(thread.environmentId, thread.id)).then(
-                          (result) =>
-                            result._tag === "Success" || setStatus("Could not settle that thread."),
-                        )
-                      }
+                      onClick={() => settle(thread)}
                     >
                       <CheckIcon className="size-3" />
                     </button>

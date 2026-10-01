@@ -19,7 +19,7 @@ import { ROOM_SECTIONS, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
-import { LayoutGridIcon, RefreshCwIcon, XIcon } from "lucide-react";
+import { CheckIcon, LayoutGridIcon, RefreshCwIcon, XIcon } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { Button } from "~/components/ui/button";
@@ -46,6 +46,7 @@ import type { SidebarThreadSummary } from "~/types";
 export type HqRoom = {
   slug: string;
   label: string;
+  outcome: string;
   zone: RoomSection;
   threadIds: ReadonlySet<string>;
 };
@@ -87,6 +88,7 @@ const roomsAtom = Atom.make((get) => {
       .map((room): HqRoom => ({
         slug: room.slug,
         label: room.title,
+        outcome: room.outcome,
         zone: room.section,
         threadIds: new Set(room.threadIds),
       })),
@@ -294,26 +296,32 @@ export function sortThreadsByActivity<T extends ActivityInput>(threads: readonly
   );
 }
 
-/** A room's live threads (all live threads for null), most recently active first. */
+/**
+ * A room's unsettled threads (all of them for null), most recently active first. Settling a thread
+ * is how it leaves a room's working set; the sidebar still lists it under Settled.
+ */
 export function hqRoomThreads(
   room: HqRoom | null,
   threads: readonly SidebarThreadSummary[],
+  { includeSettled = false } = {},
 ): SidebarThreadSummary[] {
   return sortThreadsByActivity(
     threads.filter(
-      (thread) => thread.archivedAt === null && (room === null || room.threadIds.has(thread.id)),
+      (thread) =>
+        thread.archivedAt === null &&
+        (includeSettled || thread.settledOverride !== "settled") &&
+        (room === null || room.threadIds.has(thread.id)),
     ),
   );
 }
 
-/** Live, unsettled threads that no room holds, most recently active first. */
+/** Unsettled threads that no room holds, most recently active first. */
 export function hqUnroomedThreads(
   rooms: readonly HqRoom[],
   threads: readonly SidebarThreadSummary[],
 ): SidebarThreadSummary[] {
   return hqRoomThreads(null, threads).filter(
-    (thread) =>
-      thread.settledOverride !== "settled" && !rooms.some((room) => room.threadIds.has(thread.id)),
+    (thread) => !rooms.some((room) => room.threadIds.has(thread.id)),
   );
 }
 
@@ -420,10 +428,12 @@ export function HqRoomsLink({ onBackdrop }: { onBackdrop: boolean }) {
 export function HqThreadActions({
   slug,
   thread,
+  onSettle,
   onStatus,
 }: {
   slug: string;
   thread: Pick<SidebarThreadSummary, "id" | "environmentId" | "title">;
+  onSettle: () => void;
   onStatus: (message: string) => void;
 }) {
   const [replacing, setReplacing] = useState(false);
@@ -439,19 +449,8 @@ export function HqThreadActions({
       >
         <RefreshCwIcon className="size-3" />
       </button>
-      <button
-        type="button"
-        aria-label="Remove from room"
-        title="Remove from room"
-        className={button}
-        onClick={() =>
-          setHqThreadRoom(slug, thread.id, false).then(
-            () => onStatus(`Removed ${thread.title} from the room.`),
-            (error: unknown) => onStatus(error instanceof Error ? error.message : String(error)),
-          )
-        }
-      >
-        <XIcon className="size-3" />
+      <button type="button" aria-label="Settle thread" className={button} onClick={onSettle}>
+        <CheckIcon className="size-3" />
       </button>
       {replacing ? (
         <HqReplaceDialog
