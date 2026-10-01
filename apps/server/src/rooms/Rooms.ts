@@ -41,6 +41,17 @@ export class Rooms extends Context.Service<
     readonly setThread: (input: RoomSetThreadInput) => Effect.Effect<void, RoomsError>;
     /** Recorded documents, files under `cc/<slug>/` in member worktrees, and member threads' PRs. */
     readonly shelf: (slug: string) => Effect.Effect<RoomShelf, RoomsError>;
+    /**
+     * Records a link or file on a room's shelf; PR links take their canonical form. Adding a ref
+     * again keeps it once and only replaces the title when one is given.
+     */
+    readonly addDocument: (input: {
+      readonly slug: string;
+      readonly ref: string;
+      readonly title?: string | undefined;
+      readonly threadId: string | null;
+    }) => Effect.Effect<{ ref: string; title: string; kind: string }, RoomsError>;
+    readonly list: Effect.Effect<RoomList, RoomsError>;
     /** Emits every room first, then the full list after each change. */
     readonly stream: Stream.Stream<RoomList>;
   }
@@ -110,7 +121,7 @@ const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
                     {
                       ref: `${dir}/${path}`,
                       title: path,
-                      kind: /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "file",
+                      kind: fileKind(path),
                       threadId: null,
                       addedAt: Option.getOrElse(
                         Option.map(info.mtime, (mtime) => mtime.toISOString()),
@@ -129,6 +140,8 @@ const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
     // No `cc/<slug>` folder in this worktree.
     Effect.orElseSucceed((): ReadonlyArray<ShelfRow> => []),
   );
+
+const fileKind = (path: string) => /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "file";
 
 const PR_URL =
   /^https:\/\/(?:github\.com\/([^/]+)\/([^/]+)\/pull|app\.graphite\.(?:com|dev)\/github\/pr\/([^/]+)\/([^/]+))\/(\d+)/i;
@@ -364,6 +377,28 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const addDocument: Rooms["Service"]["addDocument"] = (input) =>
+    run(
+      "Could not add to the shelf.",
+      Effect.gen(function* () {
+        yield* find(input.slug);
+        const ref = shelfPrRef(input.ref);
+        const local = ref.startsWith("/");
+        const kind = PR_URL.test(input.ref) ? "pr" : local ? fileKind(ref) : "link";
+        const fallbackTitle = local ? ref.slice(ref.lastIndexOf("/") + 1) : ref;
+        const addedAt = yield* nowIso;
+        const [row] = yield* sql<{ title: string }>`
+          INSERT INTO hq_room_documents (room_slug, ref, title, kind, thread_id, added_at)
+          VALUES (${input.slug}, ${ref}, ${input.title ?? fallbackTitle}, ${kind},
+            ${input.threadId}, ${addedAt})
+          ON CONFLICT (room_slug, ref) DO UPDATE SET
+            title = COALESCE(${input.title ?? null}, title)
+          RETURNING title
+        `;
+        return { ref, title: row?.title ?? fallbackTitle, kind };
+      }),
+    );
+
   // One-slot sliding mailbox per subscriber: lists are whole states, so a slow socket only needs
   // the newest one.
   const stream: Rooms["Service"]["stream"] = Stream.callback<RoomList>(
@@ -379,7 +414,7 @@ export const make = Effect.gen(function* () {
     { bufferSize: 1, strategy: "sliding" },
   );
 
-  return Rooms.of({ create, update, reorder, setThread, shelf, stream });
+  return Rooms.of({ create, update, reorder, setThread, shelf, addDocument, list, stream });
 });
 
 export const layer = Layer.effect(Rooms, make);
