@@ -59,6 +59,7 @@ import { useComposerMenuProps } from "./chat/composerEventScope";
 import { measureRestingComposerControls } from "./chat/restingComposerControlsMeasurement";
 import { resolveRestingComposerControlsNaturalWidth } from "./composerFooterLayout";
 import { cn } from "~/lib/utils";
+import { HqRoomPicker } from "~/hqRooms";
 
 export interface BranchToolbarHandle {
   openBranchPicker: () => void;
@@ -629,6 +630,7 @@ export const BranchToolbar = memo(function BranchToolbar({
         !contextStripVisible && "pointer-events-none invisible absolute inset-x-0 top-full",
       )}
     >
+      <HqRoomPicker threadId={threadId} isDraft={draftId !== undefined} />
       {showGitControls ? (
         <div className="contents @3xl/composer-surface:hidden">
           <MobileRunContextSelector
