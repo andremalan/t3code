@@ -82,7 +82,7 @@ const SendToThreadTool = Tool.make("send_to_thread", {
 
 const ShelfAddTool = Tool.make("shelf_add", {
   description:
-    "Put a deliverable on the room's shelf: a URL, or a file path (absolute, or relative to this thread's worktree). Files under cc/<room>/ in a member worktree are shelved automatically; use this for anything else. Adding the same ref again updates its title.",
+    "Put a deliverable on the room's shelf: a URL, or a file path (absolute, or relative to this thread's worktree). Files under cc/<room>/ in a member worktree are shelved automatically; use this for anything else. Pull requests are not shelved: link them with link_pull_request and the room shows them. Adding the same ref again updates its title.",
   parameters: Schema.Struct({
     ref: TrimmedNonEmptyString.annotate({ description: "URL or file path." }),
     title: Schema.optional(TrimmedNonEmptyString),

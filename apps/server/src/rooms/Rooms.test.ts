@@ -133,7 +133,7 @@ it.effect("imports HQ rooms and shelves, resolving members to live T3 threads", 
     `;
 
     const first = yield* Rooms.importHqRooms(stateDir);
-    assert.deepStrictEqual(first, { rooms: 3, threads: 2, skippedMembers: 2, documents: 2 });
+    assert.deepStrictEqual(first, { rooms: 3, threads: 2, skippedMembers: 2, documents: 1 });
     const again = yield* Rooms.importHqRooms(stateDir);
     assert.deepStrictEqual(again, { rooms: 0, threads: 0, skippedMembers: 2, documents: 0 });
 
@@ -145,7 +145,8 @@ it.effect("imports HQ rooms and shelves, resolving members to live T3 threads", 
     assert.deepStrictEqual([...dex.threadIds].toSorted(), ["thread-claude", "thread-codex"]);
     assert.isNotNull(current!.find((room) => room.slug === "old")!.archivedAt);
 
-    // Recorded, scanned and linked entries merge by ref; the missing file is dropped.
+    // Recorded and scanned entries merge by ref; the recorded PR and missing file are dropped and
+    // the PR comes from its thread link.
     const shelf = yield* rooms.shelf("dex");
     assert.deepStrictEqual(
       shelf.map(({ ref, title, kind, threadId, prState }) => ({

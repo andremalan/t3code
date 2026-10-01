@@ -42,8 +42,8 @@ export class Rooms extends Context.Service<
     /** Recorded documents, files under `cc/<slug>/` in member worktrees, and member threads' PRs. */
     readonly shelf: (slug: string) => Effect.Effect<RoomShelf, RoomsError>;
     /**
-     * Records a link or file on a room's shelf; PR links take their canonical form. Adding a ref
-     * again keeps it once and only replaces the title when one is given.
+     * Records a link or file on a room's shelf; pull requests are refused (link them to a thread).
+     * Adding a ref again keeps it once and only replaces the title when one is given.
      */
     readonly addDocument: (input: {
       readonly slug: string;
@@ -146,7 +146,10 @@ const fileKind = (path: string) => /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() 
 const PR_URL =
   /^https:\/\/(?:github\.com\/([^/]+)\/([^/]+)\/pull|app\.graphite\.(?:com|dev)\/github\/pr\/([^/]+)\/([^/]+))\/(\d+)/i;
 
-/** HQ's canonical PR link, so a recorded PR and a thread's linked PR are one shelf entry. */
+/** Pull requests reach the shelf by being linked to a room thread, never recorded on it. */
+const isPullRequestUrl = (ref: string) => PR_URL.test(ref);
+
+/** A linked PR's shelf link: Graphite's, for GitHub PRs. */
 export function shelfPrRef(url: string): string {
   const match = PR_URL.exec(url);
   if (!match) return url;
@@ -359,15 +362,14 @@ export const make = Effect.gen(function* () {
         }
         for (const pr of prs) {
           const ref = shelfPrRef(pr.url);
-          const existing = docs.get(ref);
           const prState =
             pr.state === "open" && pr.isDraft ? "draft" : (pr.state as RoomShelfDoc["prState"]);
           docs.set(ref, {
             ref,
             title: pr.title ?? `${pr.repository} #${pr.number}`,
             kind: "pr",
-            threadId: existing?.threadId ?? pr.threadId,
-            addedAt: existing?.addedAt ?? pr.linkedAt,
+            threadId: pr.threadId,
+            addedAt: pr.linkedAt,
             ...(prState ? { prState } : {}),
           });
         }
@@ -382,9 +384,15 @@ export const make = Effect.gen(function* () {
       "Could not add to the shelf.",
       Effect.gen(function* () {
         yield* find(input.slug);
-        const ref = shelfPrRef(input.ref);
+        if (isPullRequestUrl(input.ref)) {
+          return yield* new RoomsError({
+            message:
+              "Link pull requests to their thread with link_pull_request instead; the shelf lists every PR linked to a thread in the room.",
+          });
+        }
+        const ref = input.ref;
         const local = ref.startsWith("/");
-        const kind = PR_URL.test(input.ref) ? "pr" : local ? fileKind(ref) : "link";
+        const kind = local ? fileKind(ref) : "link";
         const fallbackTitle = local ? ref.slice(ref.lastIndexOf("/") + 1) : ref;
         const addedAt = yield* nowIso;
         const [row] = yield* sql<{ title: string }>`
@@ -424,7 +432,7 @@ export interface HqImportResult {
   readonly threads: number;
   /** HQ members whose session no live T3 thread runs (cmux sessions, deleted threads). */
   readonly skippedMembers: number;
-  /** Shelf entries; local files that no longer exist are left behind. */
+  /** Shelf entries; pull requests and local files that no longer exist are left behind. */
   readonly documents: number;
 }
 
@@ -432,8 +440,8 @@ export interface HqImportResult {
  * Copies rooms and their T3 threads from an HQ state directory (`hq.sqlite`, and
  * `config/ROOM-ORDER.json` for sections). HQ keys members on provider session ids; this resolves
  * them to the thread whose resume cursor names that session, as HQ does. Existing rooms and
- * memberships are kept, so it can be rerun. Shelf documents come along, with PR links in the
- * canonical form `shelf` merges on.
+ * memberships are kept, so it can be rerun. Shelf documents come along, except pull requests:
+ * the shelf shows those through thread links.
  */
 export const importHqRooms = (stateDir: string) =>
   Effect.gen(function* () {
@@ -475,6 +483,7 @@ export const importHqRooms = (stateDir: string) =>
     let documents = 0;
     const liveDocuments: Array<(typeof hq.documents)[number]> = [];
     for (const document of hq.documents) {
+      if (document.kind === "pr" || isPullRequestUrl(document.ref)) continue;
       if (
         !document.ref.startsWith("/") ||
         (yield* fs.exists(document.ref).pipe(Effect.orElseSucceed(() => false)))
@@ -512,7 +521,7 @@ export const importHqRooms = (stateDir: string) =>
           const inserted = yield* sql<{ ref: string }>`
             INSERT OR IGNORE INTO hq_room_documents
               (room_slug, ref, title, kind, thread_id, added_at)
-            VALUES (${document.slug}, ${shelfPrRef(document.ref)}, ${document.title},
+            VALUES (${document.slug}, ${document.ref}, ${document.title},
               ${document.kind}, ${threadBySession.get(document.author) ?? null},
               ${document.createdAt})
             RETURNING ref
