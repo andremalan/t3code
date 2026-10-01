@@ -61,3 +61,25 @@ export class RoomsError extends Schema.TaggedError<RoomsError>()("RoomsError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
+
+export const RoomShelfInput = Schema.Struct({ slug: RoomSlug });
+export type RoomShelfInput = typeof RoomShelfInput.Type;
+
+/**
+ * A document on a room's shelf: a file on the environment host (an absolute path) or a URL.
+ * `threadId` is the member thread that added or owns it; a file opens in that thread's preview.
+ */
+export const RoomShelfDoc = Schema.Struct({
+  ref: Schema.String,
+  title: Schema.String,
+  /** "pr", a file extension, or the kind it was recorded with ("page", "md", "link"…). */
+  kind: Schema.String,
+  threadId: Schema.NullOr(ThreadId),
+  addedAt: Schema.String,
+  prState: Schema.optionalKey(Schema.Literals(["draft", "open", "merged", "closed"])),
+});
+export type RoomShelfDoc = typeof RoomShelfDoc.Type;
+
+/** Newest first. */
+export const RoomShelf = Schema.Array(RoomShelfDoc);
+export type RoomShelf = typeof RoomShelf.Type;

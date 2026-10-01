@@ -8,6 +8,8 @@ import {
   type RoomReorderInput,
   type RoomSection,
   type RoomSetThreadInput,
+  RoomShelf,
+  type RoomShelfDoc,
   RoomsError,
   type RoomUpdateInput,
 } from "@t3tools/contracts";
@@ -16,6 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -36,6 +39,8 @@ export class Rooms extends Context.Service<
     readonly update: (input: RoomUpdateInput) => Effect.Effect<Room, RoomsError>;
     readonly reorder: (input: RoomReorderInput) => Effect.Effect<void, RoomsError>;
     readonly setThread: (input: RoomSetThreadInput) => Effect.Effect<void, RoomsError>;
+    /** Recorded documents, files under `cc/<slug>/` in member worktrees, and member threads' PRs. */
+    readonly shelf: (slug: string) => Effect.Effect<RoomShelf, RoomsError>;
     /** Emits every room first, then the full list after each change. */
     readonly stream: Stream.Stream<RoomList>;
   }
@@ -62,6 +67,17 @@ const ensureSchema = Effect.gen(function* () {
       PRIMARY KEY (room_slug, thread_id)
     ) WITHOUT ROWID
   `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS hq_room_documents (
+      room_slug TEXT NOT NULL REFERENCES hq_rooms(slug) ON DELETE CASCADE,
+      ref TEXT NOT NULL,
+      title TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      thread_id TEXT,
+      added_at TEXT NOT NULL,
+      PRIMARY KEY (room_slug, ref)
+    ) WITHOUT ROWID
+  `;
 });
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -69,6 +85,61 @@ const decodeRoomList = Schema.decodeUnknownEffect(RoomList);
 
 const isRoomsError = Schema.is(RoomsError);
 const roomsError = (message: string) => (cause: unknown) => new RoomsError({ message, cause });
+
+const decodeRoomShelf = Schema.decodeUnknownEffect(RoomShelf);
+
+interface ShelfRow {
+  readonly ref: string;
+  readonly title: string;
+  readonly kind: string;
+  readonly threadId: string | null;
+  readonly addedAt: string;
+}
+
+/** Files below `dir`, skipping dot paths; titled by their path inside it as HQ did. */
+const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
+  fs.readDirectory(dir, { recursive: true }).pipe(
+    Effect.flatMap((paths) =>
+      Effect.forEach(
+        paths.filter((path) => !path.split("/").some((segment) => segment.startsWith("."))),
+        (path) =>
+          fs.stat(`${dir}/${path}`).pipe(
+            Effect.map((info): ReadonlyArray<ShelfRow> =>
+              info.type === "File"
+                ? [
+                    {
+                      ref: `${dir}/${path}`,
+                      title: path,
+                      kind: /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() ?? "file",
+                      threadId: null,
+                      addedAt: Option.getOrElse(
+                        Option.map(info.mtime, (mtime) => mtime.toISOString()),
+                        () => "",
+                      ),
+                    },
+                  ]
+                : [],
+            ),
+            Effect.orElseSucceed(() => []),
+          ),
+        { concurrency: 16 },
+      ),
+    ),
+    Effect.map((files) => files.flat()),
+    // No `cc/<slug>` folder in this worktree.
+    Effect.orElseSucceed((): ReadonlyArray<ShelfRow> => []),
+  );
+
+const PR_URL =
+  /^https:\/\/(?:github\.com\/([^/]+)\/([^/]+)\/pull|app\.graphite\.(?:com|dev)\/github\/pr\/([^/]+)\/([^/]+))\/(\d+)/i;
+
+/** HQ's canonical PR link, so a recorded PR and a thread's linked PR are one shelf entry. */
+export function shelfPrRef(url: string): string {
+  const match = PR_URL.exec(url);
+  if (!match) return url;
+  const [, owner = match[3]!, repo = match[4]!] = match;
+  return `https://app.graphite.com/github/pr/${owner.toLowerCase()}/${repo.toLowerCase()}/${match[5]}`;
+}
 
 const listRooms = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -105,6 +176,7 @@ const listRooms = Effect.gen(function* () {
 /** @public Service construction is part of the canonical Effect module API. */
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const fs = yield* FileSystem.FileSystem;
   yield* ensureSchema;
   const changes = yield* PubSub.unbounded<RoomList>();
 
@@ -213,6 +285,85 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const shelf = (slug: string) =>
+    run(
+      "Could not read the shelf.",
+      Effect.gen(function* () {
+        yield* find(slug);
+        const recorded = yield* sql<ShelfRow>`
+          SELECT ref, title, kind, thread_id AS "threadId", added_at AS "addedAt"
+          FROM hq_room_documents WHERE room_slug = ${slug}
+        `;
+        const members = yield* sql<{ threadId: string; root: string | null }>`
+          SELECT t.thread_id AS "threadId", COALESCE(t.worktree_path, p.workspace_root) AS "root"
+          FROM hq_room_threads m
+          JOIN projection_threads t ON t.thread_id = m.thread_id AND t.deleted_at IS NULL
+          LEFT JOIN projection_projects p ON p.project_id = t.project_id
+          WHERE m.room_slug = ${slug}
+        `;
+        const prs = yield* sql<{
+          threadId: string;
+          repository: string;
+          number: number;
+          url: string;
+          linkedAt: string;
+          title: string | null;
+          state: string | null;
+          isDraft: number | null;
+        }>`
+          SELECT pr.thread_id AS "threadId", pr.repository, pr.number, pr.url,
+            pr.linked_at AS "linkedAt",
+            json_extract(pr.snapshot_json, '$.title') AS "title",
+            json_extract(pr.snapshot_json, '$.state') AS "state",
+            json_extract(pr.snapshot_json, '$.isDraft') AS "isDraft"
+          FROM projection_thread_pull_requests pr
+          JOIN hq_room_threads m ON m.thread_id = pr.thread_id AND m.room_slug = ${slug}
+        `;
+
+        const docs = new Map<string, ShelfRow>();
+        for (const row of recorded) {
+          if (
+            !row.ref.startsWith("/") ||
+            (yield* fs.exists(row.ref).pipe(Effect.orElseSucceed(() => false)))
+          ) {
+            docs.set(row.ref, row);
+          }
+        }
+        const roots = new Map<string, string>();
+        for (const member of members) {
+          if (member.root && !roots.has(member.root)) roots.set(member.root, member.threadId);
+        }
+        for (const [root, threadId] of roots) {
+          for (const file of yield* shelfFiles(fs, `${root}/cc/${slug}`)) {
+            const existing = docs.get(file.ref);
+            docs.set(
+              file.ref,
+              existing
+                ? { ...existing, threadId: existing.threadId ?? threadId }
+                : { ...file, threadId },
+            );
+          }
+        }
+        for (const pr of prs) {
+          const ref = shelfPrRef(pr.url);
+          const existing = docs.get(ref);
+          const prState =
+            pr.state === "open" && pr.isDraft ? "draft" : (pr.state as RoomShelfDoc["prState"]);
+          docs.set(ref, {
+            ref,
+            title: pr.title ?? `${pr.repository} #${pr.number}`,
+            kind: "pr",
+            threadId: existing?.threadId ?? pr.threadId,
+            addedAt: existing?.addedAt ?? pr.linkedAt,
+            ...(prState ? { prState } : {}),
+          });
+        }
+        return yield* decodeRoomShelf(
+          [...docs.values()].toSorted((a, b) => b.addedAt.localeCompare(a.addedAt)),
+        );
+      }),
+    );
+
   // One-slot sliding mailbox per subscriber: lists are whole states, so a slow socket only needs
   // the newest one.
   const stream: Rooms["Service"]["stream"] = Stream.callback<RoomList>(
@@ -228,7 +379,7 @@ export const make = Effect.gen(function* () {
     { bufferSize: 1, strategy: "sliding" },
   );
 
-  return Rooms.of({ create, update, reorder, setThread, stream });
+  return Rooms.of({ create, update, reorder, setThread, shelf, stream });
 });
 
 export const layer = Layer.effect(Rooms, make);
@@ -238,13 +389,16 @@ export interface HqImportResult {
   readonly threads: number;
   /** HQ members whose session no live T3 thread runs (cmux sessions, deleted threads). */
   readonly skippedMembers: number;
+  /** Shelf entries; local files that no longer exist are left behind. */
+  readonly documents: number;
 }
 
 /**
  * Copies rooms and their T3 threads from an HQ state directory (`hq.sqlite`, and
  * `config/ROOM-ORDER.json` for sections). HQ keys members on provider session ids; this resolves
  * them to the thread whose resume cursor names that session, as HQ does. Existing rooms and
- * memberships are kept, so it can be rerun.
+ * memberships are kept, so it can be rerun. Shelf documents come along, with PR links in the
+ * canonical form `shelf` merges on.
  */
 export const importHqRooms = (stateDir: string) =>
   Effect.gen(function* () {
@@ -283,6 +437,16 @@ export const importHqRooms = (stateDir: string) =>
     let rooms = 0;
     let threads = 0;
     let skippedMembers = 0;
+    let documents = 0;
+    const liveDocuments: Array<(typeof hq.documents)[number]> = [];
+    for (const document of hq.documents) {
+      if (
+        !document.ref.startsWith("/") ||
+        (yield* fs.exists(document.ref).pipe(Effect.orElseSucceed(() => false)))
+      ) {
+        liveDocuments.push(document);
+      }
+    }
     yield* sql.withTransaction(
       Effect.gen(function* () {
         for (const room of hq.rooms) {
@@ -309,9 +473,20 @@ export const importHqRooms = (stateDir: string) =>
           `;
           threads += inserted.length;
         }
+        for (const document of liveDocuments) {
+          const inserted = yield* sql<{ ref: string }>`
+            INSERT OR IGNORE INTO hq_room_documents
+              (room_slug, ref, title, kind, thread_id, added_at)
+            VALUES (${document.slug}, ${shelfPrRef(document.ref)}, ${document.title},
+              ${document.kind}, ${threadBySession.get(document.author) ?? null},
+              ${document.createdAt})
+            RETURNING ref
+          `;
+          documents += inserted.length;
+        }
       }),
     );
-    return { rooms, threads, skippedMembers } satisfies HqImportResult;
+    return { rooms, threads, skippedMembers, documents } satisfies HqImportResult;
   });
 
 type HqRoomOrder = Partial<Record<RoomSection, ReadonlyArray<string>>>;
@@ -339,7 +514,20 @@ function readHqDatabase(path: string) {
          FROM room_members m JOIN rooms r ON r.id = m.room_id`,
       )
       .all() as unknown as ReadonlyArray<{ slug: string; session: string; attachedAt: string }>;
-    return { rooms, members };
+    const documents = db
+      .prepare(
+        `SELECT r.slug, d.ref, d.title, d.kind, d.author_id AS author, d.created_at AS createdAt
+         FROM room_documents d JOIN rooms r ON r.id = d.room_id`,
+      )
+      .all() as unknown as ReadonlyArray<{
+      slug: string;
+      ref: string;
+      title: string;
+      kind: string;
+      author: string;
+      createdAt: string;
+    }>;
+    return { rooms, members, documents };
   } finally {
     db.close();
   }

@@ -3067,6 +3067,10 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.roomsSetThread, rooms.setThread(input).pipe(Effect.as({})), {
             "rpc.aggregate": "rooms",
           }),
+        [WS_METHODS.roomsShelf]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsShelf, rooms.shelf(input.slug), {
+            "rpc.aggregate": "rooms",
+          }),
         [WS_METHODS.subscribeRooms]: () =>
           observeRpcStream(WS_METHODS.subscribeRooms, rooms.stream, {
             "rpc.aggregate": "rooms",

@@ -4,6 +4,7 @@ import { Atom } from "effect/unstable/reactivity";
 import {
   createAtomCommandScheduler,
   createEnvironmentRpcCommand,
+  createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
 import type { EnvironmentRegistry } from "../connection/registry.ts";
@@ -22,6 +23,12 @@ export function createRoomsEnvironmentAtoms<R, E>(
     rooms: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
       label: "environment-data:rooms",
       tag: WS_METHODS.subscribeRooms,
+    }),
+    // Read on open: the server scans worktrees for it, so it is not pushed.
+    shelf: createEnvironmentRpcQueryAtomFamily(runtime, {
+      label: "environment-data:rooms:shelf",
+      tag: WS_METHODS.roomsShelf,
+      staleTimeMs: 15_000,
     }),
     create: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:rooms:create",

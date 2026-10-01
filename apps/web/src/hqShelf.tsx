@@ -1,46 +1,47 @@
-// HQ Rooms spike: a room's shelf, shared by the room page and the Shelf surface.
+// HQ Rooms: a room's shelf, shared by the room page and the Shelf surface.
+import type { ScopedThreadRef } from "@t3tools/contracts";
 import { Link } from "@tanstack/react-router";
-import { ArrowLeftIcon, ExternalLinkIcon, XIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { HQ_SHELF_GROUPS, type HqShelfDoc, useHqRooms } from "./hqRooms";
-import { cn } from "./lib/utils";
+import {
+  HQ_SHELF_GROUPS,
+  type HqShelfGroup,
+  shelfGroup,
+  useHqRooms,
+  useOpenShelfDoc,
+  useRoomShelf,
+} from "./hqRooms";
 import { formatRelativeTimeLabel } from "./timestampFormat";
 
-const BADGES: Record<HqShelfDoc["group"], string> = {
+const BADGES: Record<HqShelfGroup, string> = {
   "Pull requests": "PR",
   Pages: "N",
   Markdown: "M",
-  "Other links": "↗",
+  Other: "↗",
 };
 
-/** Grouped, searchable shelf. HQ documents go to `onRead`; external links open a tab. */
-export function HqShelfList(props: {
-  shelf: readonly HqShelfDoc[];
-  reading: string | undefined;
-  onRead: (target: string) => void;
-}) {
+/** Grouped, searchable shelf. Files open in one of `threads`' file preview; links open a tab. */
+export function HqShelfList(props: { slug: string; threads: readonly ScopedThreadRef[] }) {
+  const shelf = useRoomShelf(props.slug);
+  const openDoc = useOpenShelfDoc();
   const [query, setQuery] = useState("");
+  const docs = shelf.data;
   const groups = useMemo(() => {
     const term = query.trim().toLowerCase();
-    const docs = props.shelf.filter(
-      (entry) => !term || `${entry.name} ${entry.by} ${entry.group}`.toLowerCase().includes(term),
-    );
+    const matching = (docs ?? [])
+      .map((doc) => ({ ...doc, group: shelfGroup(doc) }))
+      .filter((doc) => !term || `${doc.title} ${doc.group}`.toLowerCase().includes(term));
     return HQ_SHELF_GROUPS.map((group) => ({
       group,
-      docs: docs.filter((entry) => entry.group === group),
+      docs: matching.filter((doc) => doc.group === group),
     })).filter((section) => section.docs.length > 0);
-  }, [query, props.shelf]);
-  const pick = (entry: HqShelfDoc) => {
-    if (entry.target.startsWith("/hq/")) props.onRead(entry.target);
-    else if (entry.target) window.open(entry.target, "_blank", "noopener,noreferrer");
-  };
+  }, [query, docs]);
 
   return (
     <div data-testid="hq-room-shelf">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          Shelf <span className="opacity-60">{props.shelf.length}</span>
+          Shelf <span className="opacity-60">{docs?.length ?? ""}</span>
         </h2>
         <input
           type="search"
@@ -52,32 +53,25 @@ export function HqShelfList(props: {
       </div>
       {groups.map((section) => (
         <div key={section.group} className="mb-4">
-          <h3 className="mb-1 text-[11px] text-muted-foreground">{section.group}</h3>
+          <h3 className="mb-1 text-2xs text-muted-foreground">{section.group}</h3>
           <ul className="flex flex-col">
-            {section.docs.map((entry) => (
-              <li key={entry.target || entry.name}>
+            {section.docs.map((doc) => (
+              <li key={doc.ref}>
                 <button
                   type="button"
-                  disabled={!entry.target}
-                  title={entry.target ? undefined : entry.localPath}
-                  className={cn(
-                    "flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent disabled:opacity-50",
-                    entry.target === props.reading && "bg-accent",
-                  )}
-                  onClick={() => pick(entry)}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm hover:bg-accent"
+                  onClick={() => openDoc(doc, props.threads)}
                 >
-                  <span className="w-5 shrink-0 text-center text-[10px] text-muted-foreground">
-                    {BADGES[entry.group]}
+                  <span className="w-5 shrink-0 text-center text-3xs text-muted-foreground">
+                    {BADGES[section.group]}
                   </span>
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                  {entry.prStatus ? (
-                    <span className="shrink-0 text-[10px] text-muted-foreground">
-                      {entry.prStatus}
-                    </span>
+                  <span className="min-w-0 flex-1 truncate">{doc.title}</span>
+                  {doc.prState ? (
+                    <span className="shrink-0 text-3xs text-muted-foreground">{doc.prState}</span>
                   ) : null}
-                  {entry.ts ? (
+                  {doc.addedAt ? (
                     <span className="shrink-0 text-xs text-muted-foreground">
-                      {formatRelativeTimeLabel(entry.ts)}
+                      {formatRelativeTimeLabel(doc.addedAt)}
                     </span>
                   ) : null}
                 </button>
@@ -86,76 +80,35 @@ export function HqShelfList(props: {
           </ul>
         </div>
       ))}
-      {groups.length === 0 ? (
-        <p className="text-xs text-muted-foreground">Nothing on the shelf matches.</p>
+      {shelf.error ? (
+        <p className="text-xs text-destructive">{shelf.error}</p>
+      ) : docs === null ? (
+        <p className="text-xs text-muted-foreground">Loading the shelf…</p>
+      ) : groups.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          {docs.length === 0 ? "Nothing on the shelf yet." : "Nothing on the shelf matches."}
+        </p>
       ) : null}
     </div>
   );
 }
 
-export function HqDocReader(props: { doc: HqShelfDoc; onClose: () => void; back?: boolean }) {
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-testid="hq-doc-reader">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2 text-sm">
-        {/* Beside the shelf (desktop) it closes with X; alone on a phone, back returns to it. */}
-        <button
-          type="button"
-          aria-label="Back to shelf"
-          className={cn("text-muted-foreground hover:text-foreground", !props.back && "md:hidden")}
-          onClick={props.onClose}
-        >
-          <ArrowLeftIcon className="size-4" />
-        </button>
-        <span className="min-w-0 flex-1 truncate font-medium">{props.doc.name}</span>
-        <a
-          href={props.doc.target}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label="Open in new tab"
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <ExternalLinkIcon className="size-4" />
-        </a>
-        {props.back ? null : (
-          <button
-            type="button"
-            aria-label="Close document"
-            className="hidden text-muted-foreground hover:text-foreground md:block"
-            onClick={props.onClose}
-          >
-            <XIcon className="size-4" />
-          </button>
-        )}
-      </div>
-      {/* Same-origin via the /hq proxy: no scripts, so a shelf page can't act as T3. */}
-      <iframe
-        title={props.doc.name}
-        src={props.doc.target}
-        sandbox="allow-popups allow-popups-to-escape-sandbox"
-        className="min-h-0 flex-1 bg-white"
-      />
-    </div>
-  );
-}
-
-/** Right-panel surface: the shelf of the room this thread belongs to. */
-export function HqShelfPanel(props: { threadId: string | null }) {
+/** Right-panel surface: the shelf of the room this thread belongs to; files open beside it. */
+export function HqShelfPanel(props: { threadRef: ScopedThreadRef | null }) {
   const { rooms, selectedSlug } = useHqRooms();
-  const [reading, setReading] = useState<string | undefined>();
+  const threadId = props.threadRef?.threadId;
   const room =
-    rooms.find((candidate) => props.threadId && candidate.threadIds.has(props.threadId)) ??
+    rooms.find((candidate) => threadId && candidate.threadIds.has(threadId)) ??
     rooms.find((candidate) => candidate.slug === selectedSlug) ??
     null;
-  const doc = room?.shelf.find((entry) => entry.target === reading) ?? null;
 
-  if (room === null) {
+  if (room === null || props.threadRef === null) {
     return (
       <p className="p-4 text-sm text-muted-foreground">
-        {rooms.length === 0 ? "Loading rooms…" : "This thread isn't in an HQ room."}
+        {rooms.length === 0 ? "Loading rooms…" : "This thread isn't in a room."}
       </p>
     );
   }
-  if (doc) return <HqDocReader doc={doc} onClose={() => setReading(undefined)} back />;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto p-4" data-testid="hq-shelf-panel">
       <Link
@@ -165,7 +118,7 @@ export function HqShelfPanel(props: { threadId: string | null }) {
       >
         {room.label}
       </Link>
-      <HqShelfList shelf={room.shelf} reading={reading} onRead={setReading} />
+      <HqShelfList slug={room.slug} threads={[props.threadRef]} />
     </div>
   );
 }

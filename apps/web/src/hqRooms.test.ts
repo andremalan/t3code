@@ -10,7 +10,7 @@ vi.hoisted(() => {
   } as Storage;
 });
 
-import { moveRoomOrder, parseShelfFeed } from "./hqRooms";
+import { moveRoomOrder, shelfGroup } from "./hqRooms";
 
 describe("moveRoomOrder", () => {
   const rooms = [
@@ -46,23 +46,14 @@ describe("moveRoomOrder", () => {
   });
 });
 
-describe("parseShelfFeed", () => {
-  it("serves HQ documents through the /hq proxy and drops links it cannot open", () => {
-    const doc = { group: "Markdown", by: "", ts: "" } as const;
-    const shelves = parseShelfFeed([
-      {
-        slug: "hq",
-        shelf: [
-          { ...doc, name: "reader", link: "/doc/room-document/1" },
-          { ...doc, name: "web", link: "https://example.com/a" },
-          { ...doc, name: "path", link: "", localPath: "/tmp/a.md" },
-        ],
-      },
-    ]);
-    expect(shelves.get("hq")?.map((entry) => entry.target)).toEqual([
-      "/hq/doc/room-document/1",
-      "https://example.com/a",
-      "",
-    ]);
+describe("shelfGroup", () => {
+  it("groups by recorded kind, then by the ref's shape", () => {
+    const group = (ref: string, kind = "file") => shelfGroup({ ref, kind });
+    expect(group("https://app.graphite.com/github/pr/acme/app/7", "pr")).toBe("Pull requests");
+    expect(group("https://github.com/acme/app/pull/7")).toBe("Pull requests");
+    expect(group("/w/cc/hq/plan.html", "html")).toBe("Pages");
+    expect(group("https://www.notion.so/Plan-1")).toBe("Pages");
+    expect(group("/w/cc/hq/NOTES.MD")).toBe("Markdown");
+    expect(group("/w/cc/hq/shot.png", "png")).toBe("Other");
   });
 });

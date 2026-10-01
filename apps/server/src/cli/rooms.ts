@@ -37,7 +37,7 @@ const importHqCommand = Command.make("import-hq", {
         ),
       );
       yield* Console.log(
-        `Imported ${result.rooms} rooms and ${result.threads} memberships into ${config.dbPath}. ` +
+        `Imported ${result.rooms} rooms, ${result.threads} memberships and ${result.documents} shelf documents into ${config.dbPath}. ` +
           `Skipped ${result.skippedMembers} members with no live T3 thread.`,
       );
     }),

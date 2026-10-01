@@ -99,7 +99,14 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
-import { hqRoomThreads, useHqRooms, useOpenHqRoom } from "../hqRooms";
+import {
+  hqRoomThreads,
+  shelfGroup,
+  useHqRooms,
+  useOpenHqRoom,
+  useOpenShelfDoc,
+  useRoomShelf,
+} from "../hqRooms";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -780,8 +787,10 @@ function OpenCommandPaletteDialog(props: {
   }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
-  const { rooms: hqRooms } = useHqRooms();
+  const { rooms: hqRooms, selectedSlug: hqSelectedSlug } = useHqRooms();
   const openHqRoom = useOpenHqRoom();
+  const openShelfDoc = useOpenShelfDoc();
+  const hqShelf = useRoomShelf(hqSelectedSlug);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const {
     theme,
@@ -2127,7 +2136,7 @@ function OpenCommandPaletteDialog(props: {
     },
   }));
   // HQ Rooms spike: a room opens its page (which filters the sidebar); "All threads"
-  // clears the filter. Shelf documents open in the room page's reader.
+  // clears the filter. The selected room's shelf is searchable; its files open in a room thread.
   const roomSearchItems: CommandPaletteActionItem[] = [null, ...hqRooms].map((room) => {
     return {
       kind: "action",
@@ -2135,9 +2144,7 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
       title: room?.label ?? "All threads",
       description: room
-        ? [`${hqRoomThreads(room, threads).length} threads`, `${room.shelf.length} on shelf`].join(
-            " · ",
-          )
+        ? `${hqRoomThreads(room, threads).length} threads`
         : "Clear the room filter",
       icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
@@ -2146,30 +2153,28 @@ function OpenCommandPaletteDialog(props: {
       },
     };
   });
-  const shelfSearchItems: CommandPaletteActionItem[] = hqRooms.flatMap((room) =>
-    room.shelf
-      .filter((entry) => entry.target)
-      .map((entry) => ({
+  const hqSelectedRoom = hqRooms.find((room) => room.slug === hqSelectedSlug) ?? null;
+  const shelfSearchItems: CommandPaletteActionItem[] = hqSelectedRoom
+    ? (hqShelf.data ?? []).map((doc) => ({
         kind: "action" as const,
-        value: `shelf:${room.slug}:${entry.target}`,
-        searchTerms: [entry.name, room.label, entry.group, "shelf"],
-        title: entry.name,
-        description: [room.label, entry.group, entry.prStatus].filter(Boolean).join(" · "),
-        ...(entry.ts ? { timestamp: formatRelativeTimeLabel(entry.ts) } : {}),
+        value: `shelf:${hqSelectedRoom.slug}:${doc.ref}`,
+        searchTerms: [doc.title, hqSelectedRoom.label, shelfGroup(doc), "shelf"],
+        title: doc.title,
+        description: [hqSelectedRoom.label, shelfGroup(doc), doc.prState]
+          .filter(Boolean)
+          .join(" · "),
+        ...(doc.addedAt ? { timestamp: formatRelativeTimeLabel(doc.addedAt) } : {}),
         icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
-        run: async () => {
-          if (entry.target.startsWith("/hq/")) {
-            await navigate({
-              to: "/rooms/$slug",
-              params: { slug: room.slug },
-              search: { doc: entry.target },
-            });
-          } else {
-            window.open(entry.target, "_blank", "noopener,noreferrer");
-          }
-        },
-      })),
-  );
+        run: async () =>
+          openShelfDoc(
+            doc,
+            hqRoomThreads(hqSelectedRoom, threads).map((thread) => ({
+              environmentId: thread.environmentId,
+              threadId: thread.id,
+            })),
+          ),
+      }))
+    : [];
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =

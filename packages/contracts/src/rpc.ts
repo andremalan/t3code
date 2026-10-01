@@ -288,6 +288,8 @@ import {
   RoomList,
   RoomReorderInput,
   RoomSetThreadInput,
+  RoomShelf,
+  RoomShelfInput,
   RoomsError,
   RoomUpdateInput,
 } from "./rooms.ts";
@@ -456,6 +458,7 @@ export const WS_METHODS = {
   roomsUpdate: "rooms.update",
   roomsReorder: "rooms.reorder",
   roomsSetThread: "rooms.setThread",
+  roomsShelf: "rooms.shelf",
   subscribeRooms: "subscribeRooms",
 
   // Streaming subscriptions
@@ -994,6 +997,12 @@ const WsRoomsReorderRpc = Rpc.make(WS_METHODS.roomsReorder, {
 const WsRoomsSetThreadRpc = Rpc.make(WS_METHODS.roomsSetThread, {
   payload: RoomSetThreadInput,
   success: Schema.Struct({}),
+  error: RoomsRpcError,
+});
+
+const WsRoomsShelfRpc = Rpc.make(WS_METHODS.roomsShelf, {
+  payload: RoomShelfInput,
+  success: RoomShelf,
   error: RoomsRpcError,
 });
 
@@ -1557,6 +1566,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoomsUpdateRpc,
   WsRoomsReorderRpc,
   WsRoomsSetThreadRpc,
+  WsRoomsShelfRpc,
   WsSubscribeRoomsRpc,
   WsProjectsListEntriesRpc,
   WsProjectsReadFileRpc,

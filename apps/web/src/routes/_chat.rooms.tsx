@@ -46,7 +46,6 @@ type RoomCard = {
   slug: string | null;
   label: string;
   zone: HqRoom["zone"];
-  shelf: number;
   threads: SidebarThreadSummary[];
   latestMs: number;
 };
@@ -116,7 +115,6 @@ function RoomsRouteView() {
         slug: room.slug as string | null,
         label: room.label,
         zone: room.zone,
-        shelf: room.shelf.length,
         threads: roomThreads,
         latestMs: roomThreads[0] ? threadActivityMs(roomThreads[0]) : 0,
       };
@@ -126,7 +124,6 @@ function RoomsRouteView() {
       slug: null,
       label: "All threads",
       zone: "today",
-      shelf: 0,
       threads: allThreads,
       latestMs: allThreads[0] ? threadActivityMs(allThreads[0]) : 0,
     };
@@ -242,7 +239,6 @@ function RoomsRouteView() {
                         </span>
                         <span className="text-xs text-muted-foreground">
                           {card.threads.length} threads
-                          {card.shelf > 0 ? ` · ${card.shelf} on shelf` : ""}
                           {card.latestMs > 0
                             ? ` · ${formatRelativeTimeLabel(new Date(card.latestMs).toISOString())}`
                             : ""}
