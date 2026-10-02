@@ -290,6 +290,8 @@ import {
   RoomCreateInput,
   RoomList,
   RoomReorderInput,
+  RoomReplaceThreadInput,
+  RoomReplaceThreadResult,
   RoomSetThreadInput,
   RoomShelf,
   RoomShelfInput,
@@ -463,6 +465,7 @@ export const WS_METHODS = {
   roomsUpdate: "rooms.update",
   roomsReorder: "rooms.reorder",
   roomsSetThread: "rooms.setThread",
+  roomsReplaceThread: "rooms.replaceThread",
   roomsShelf: "rooms.shelf",
   subscribeRooms: "subscribeRooms",
 
@@ -1005,6 +1008,12 @@ const WsRoomsReorderRpc = Rpc.make(WS_METHODS.roomsReorder, {
 const WsRoomsSetThreadRpc = Rpc.make(WS_METHODS.roomsSetThread, {
   payload: RoomSetThreadInput,
   success: Schema.Struct({}),
+  error: RoomsRpcError,
+});
+
+const WsRoomsReplaceThreadRpc = Rpc.make(WS_METHODS.roomsReplaceThread, {
+  payload: RoomReplaceThreadInput,
+  success: RoomReplaceThreadResult,
   error: RoomsRpcError,
 });
 
@@ -1588,6 +1597,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsRoomsUpdateRpc,
   WsRoomsReorderRpc,
   WsRoomsSetThreadRpc,
+  WsRoomsReplaceThreadRpc,
   WsRoomsShelfRpc,
   WsSubscribeRoomsRpc,
   WsProjectsListEntriesRpc,

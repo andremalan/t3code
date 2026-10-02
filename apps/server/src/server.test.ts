@@ -158,6 +158,7 @@ import * as ServerSettings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as Rooms from "./rooms/Rooms.ts";
+import * as ThreadLauncher from "./rooms/ThreadLauncher.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
@@ -965,6 +966,7 @@ const buildAppUnderTest = (options?: {
           }),
           WorktreeSetupTracker.layer,
           Layer.mock(Rooms.Rooms)({}),
+          Layer.mock(ThreadLauncher.ThreadLauncher)({}),
           ProjectCloneTracker.layer.pipe(
             Layer.provide(
               Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({

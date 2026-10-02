@@ -114,6 +114,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.roomsUpdate]: AuthOrchestrationOperateScope,
   [WS_METHODS.roomsReorder]: AuthOrchestrationOperateScope,
   [WS_METHODS.roomsSetThread]: AuthOrchestrationOperateScope,
+  [WS_METHODS.roomsReplaceThread]: AuthOrchestrationOperateScope,
   [WS_METHODS.roomsShelf]: AuthOrchestrationReadScope,
   [WS_METHODS.subscribeRooms]: AuthOrchestrationReadScope,
   [WS_METHODS.projectsListEntries]: AuthOrchestrationReadScope,

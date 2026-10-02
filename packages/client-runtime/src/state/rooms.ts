@@ -54,5 +54,11 @@ export function createRoomsEnvironmentAtoms<R, E>(
       scheduler,
       concurrency,
     }),
+    replaceThread: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:rooms:replace-thread",
+      tag: WS_METHODS.roomsReplaceThread,
+      scheduler,
+      concurrency,
+    }),
   };
 }
