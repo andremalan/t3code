@@ -145,6 +145,7 @@ import * as ReviewService from "./review/ReviewService.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
 import * as Rooms from "./rooms/Rooms.ts";
+import * as ThreadLauncher from "./rooms/ThreadLauncher.ts";
 import * as NewProject from "./project/NewProject.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
@@ -624,6 +625,7 @@ const makeWsRpcLayer = (
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
       const rooms = yield* Rooms.Rooms;
+      const threadLauncher = yield* ThreadLauncher.ThreadLauncher;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       // Clone hooks run on the tracker's fiber, outside any RPC, so the
@@ -3338,6 +3340,14 @@ const makeWsRpcLayer = (
           observeRpcEffect(WS_METHODS.roomsSetThread, rooms.setThread(input).pipe(Effect.as({})), {
             "rpc.aggregate": "rooms",
           }),
+        [WS_METHODS.roomsReplaceThread]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.roomsReplaceThread,
+            threadLauncher
+              .replace(input)
+              .pipe(Effect.map((started) => ({ threadId: started.threadId }))),
+            { "rpc.aggregate": "rooms" },
+          ),
         [WS_METHODS.roomsShelf]: (input) =>
           observeRpcEffect(WS_METHODS.roomsShelf, rooms.shelf(input.slug), {
             "rpc.aggregate": "rooms",

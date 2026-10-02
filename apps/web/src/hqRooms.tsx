@@ -1,6 +1,5 @@
-// HQ Rooms: rooms and their shelves live on the primary T3 server; rooms filter the sidebar by
-// thread id. Replace still goes through the local HQ app (proxied at /hq). Selection is a local
-// preference; /rooms picks it.
+// HQ Rooms: rooms, their shelves and notes live on the primary T3 server; rooms filter the
+// sidebar by thread id. Selection is a local preference; /rooms picks it.
 import { useAtomValue } from "@effect/atom-react";
 import {
   type AtomCommand,
@@ -9,6 +8,7 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import type {
   EnvironmentId,
+  ModelSelection,
   RoomList,
   RoomNote,
   RoomSection,
@@ -62,7 +62,7 @@ import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { roomsEnvironment } from "~/state/rooms";
 import { useEnvironmentQuery } from "~/state/query";
-import { environmentServerConfigsAtom } from "~/state/server";
+import { environmentServerConfigsAtom, primaryServerProvidersAtom } from "~/state/server";
 import type { SidebarThreadSummary } from "~/types";
 
 export type HqRoom = {
@@ -135,18 +135,6 @@ const subscribe = (listener: () => void) => {
   return () => listeners.delete(listener);
 };
 
-async function postHq<T = {}>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const result = (await response.json().catch(() => ({}))) as T & { ok?: boolean; error?: string };
-  if (!response.ok || !result.ok)
-    throw new Error(result.error || `HQ refused (${response.status}).`);
-  return result;
-}
-
 async function runRooms<I, A, E>(
   command: AtomCommand<{ readonly environmentId: EnvironmentId; readonly input: I }, A, E>,
   input: I,
@@ -205,22 +193,15 @@ export async function setHqThreadRoom(slug: string, threadId: string, member: bo
   await runRooms(roomsEnvironment.setThread, { slug, threadId: ThreadId.make(threadId), member });
 }
 
-export type HqModel = { model: string; engine: string };
-export async function hqRoomModels(slug: string): Promise<HqModel[]> {
-  const response = await fetch(`/hq/api/room/${encodeURIComponent(slug)}`);
-  if (!response.ok) throw new Error(`HQ refused (${response.status}).`);
-  const room = (await response.json()) as { context?: { agentCatalog?: { models?: HqModel[] } } };
-  return room.context?.agentCatalog?.models ?? [];
-}
-
-/** Starts a fresh agent through HQ that continues the thread's recorded state, and seats it here. */
-export async function replaceHqThread(slug: string, threadId: string, model: string) {
-  const { result } = await postHq<{ result: { thread: string; titleWarning?: string } }>(
-    `/hq/api/room/${encodeURIComponent(slug)}`,
-    { action: "replace", thread: threadId, ...(model ? { model } : {}) },
-  );
-  await setHqThreadRoom(slug, result.thread, true);
-  return result;
+/**
+ * Replace: a fresh thread in the same checkout and rooms takes over from `threadId`, seeded with a
+ * handoff, and the old thread settles. Keeps the old model unless one is given.
+ */
+export async function replaceHqThread(threadId: string, modelSelection?: ModelSelection) {
+  return runRooms(roomsEnvironment.replaceThread, {
+    threadId: ThreadId.make(threadId),
+    ...(modelSelection ? { modelSelection } : {}),
+  });
 }
 
 export const hqSlug = (title: string) =>
@@ -593,13 +574,19 @@ function HqReplaceDialog({
   onStatus: (message: string) => void;
 }) {
   const navigate = useNavigate();
-  const [models, setModels] = useState<HqModel[] | null>(null);
+  const providers = useAtomValue(primaryServerProvidersAtom);
+  const models = providers
+    .filter((provider) => provider.enabled && provider.installed)
+    .flatMap((provider) =>
+      provider.models.map((option) => ({
+        key: `${provider.instanceId}\u0000${option.slug}`,
+        label: `${provider.displayName ?? provider.instanceId} · ${option.name}`,
+        selection: { instanceId: provider.instanceId, model: option.slug } as ModelSelection,
+      })),
+    );
   const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => {
-    hqRoomModels(slug).then(setModels, () => setModels([]));
-  }, [slug]);
   return (
     <Dialog open onOpenChange={(open) => !open && !busy && onClose()}>
       <DialogPopup className="sm:max-w-sm">
@@ -609,14 +596,17 @@ function HqReplaceDialog({
             event.preventDefault();
             setBusy(true);
             setError("");
-            replaceHqThread(slug, thread.id, model).then(
+            replaceHqThread(
+              thread.id,
+              models.find((option) => option.key === model)?.selection,
+            ).then(
               (result) => {
                 onClose();
-                if (result.titleWarning) onStatus(result.titleWarning);
+                onStatus(`Replaced ${thread.title}; the old thread is settled.`);
                 selectHqRoom(slug);
                 void navigate({
                   to: "/$environmentId/$threadId",
-                  params: { environmentId: thread.environmentId, threadId: result.thread },
+                  params: { environmentId: thread.environmentId, threadId: result.threadId },
                 });
               },
               (failure: unknown) => {
@@ -629,8 +619,8 @@ function HqReplaceDialog({
           <DialogHeader>
             <DialogTitle>Replace agent</DialogTitle>
             <DialogDescription>
-              Starts a fresh agent in this room that continues from {thread.title}&apos;s recorded
-              state. The old thread stays in history with a Replaced title.
+              Starts a fresh agent in the same worktree and rooms, handed the room note and{" "}
+              {thread.title}&apos;s last reply. The old thread is settled.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-2 text-sm">
@@ -642,10 +632,10 @@ function HqReplaceDialog({
                 disabled={busy}
                 onChange={(event) => setModel(event.target.value)}
               >
-                <option value="">Keep current model (latest version)</option>
-                {models?.map((each) => (
-                  <option key={each.model} value={each.model}>
-                    {each.model} ({each.engine})
+                <option value="">Keep the current model</option>
+                {models.map((option) => (
+                  <option key={option.key} value={option.key}>
+                    {option.label}
                   </option>
                 ))}
               </select>

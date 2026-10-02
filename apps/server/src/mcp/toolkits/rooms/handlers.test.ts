@@ -21,10 +21,14 @@ import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
+import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
+import { ProjectSetupScriptRunner } from "../../../project/ProjectSetupScriptRunner.ts";
+import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import * as Rooms from "../../../rooms/Rooms.ts";
+import * as ThreadLauncher from "../../../rooms/ThreadLauncher.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { RoomsToolkitHandlersLive } from "./handlers.ts";
 import { RoomsToolkit } from "./tools.ts";
@@ -63,13 +67,64 @@ const threads = new Map([
 
 const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
-  const dependencies = Rooms.layer.pipe(
+  const setupRuns = yield* Ref.make<ReadonlyArray<string>>([]);
+  const dependencies = ThreadLauncher.layer.pipe(
+    Layer.provideMerge(Rooms.layer),
     Layer.provideMerge(
       Layer.mergeAll(
         Layer.mock(ProjectionSnapshotQuery)({
           getThreadShellById: (threadId) =>
             Effect.succeed(Option.fromNullishOr(threads.get(threadId))),
           getProjectShellById: () => Effect.succeed(Option.none()),
+          getProjectShells: () =>
+            Effect.succeed([
+              { id: ProjectId.make("project-1"), title: "hq", workspaceRoot: "/repo" },
+              { id: ProjectId.make("project-2"), title: "Dex", workspaceRoot: "/code/dex-app" },
+            ] as never),
+          getThreadDetailById: () =>
+            Effect.succeed(
+              Option.some({
+                messages: [
+                  { role: "assistant", text: "Old news." },
+                  { role: "user", text: "Keep going." },
+                  { role: "assistant", text: "Shipped slice 2; slice 3 is next." },
+                ],
+              } as never),
+            ),
+        }),
+        Layer.mock(ProviderRegistry)({
+          getProviders: Effect.succeed([
+            {
+              instanceId: "codex",
+              driver: "codex",
+              enabled: true,
+              installed: true,
+              models: [
+                { slug: "gpt-5", name: "GPT-5", isDefault: true },
+                { slug: "gpt-5-codex", name: "GPT-5 Codex" },
+              ],
+            },
+            {
+              instanceId: "claudeAgent",
+              driver: "claudeAgent",
+              displayName: "Claude",
+              enabled: true,
+              installed: true,
+              models: [{ slug: "claude-opus-5-5", name: "Claude Opus 5.5", isDefault: true }],
+            },
+          ] as never),
+        }),
+        Layer.mock(GitWorkflowService)({
+          createWorktree: (input) =>
+            Effect.succeed({
+              worktree: { path: `/worktrees/${input.newRefName}`, refName: input.newRefName! },
+            }),
+        }),
+        Layer.mock(ProjectSetupScriptRunner)({
+          runForThread: (input) =>
+            Ref.update(setupRuns, (runs) => [...runs, input.worktreePath]).pipe(
+              Effect.as({ status: "no-script" as const }),
+            ),
         }),
         Layer.mock(OrchestrationEngineService)({
           readEvents: () => Stream.empty,
@@ -110,7 +165,13 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
       }),
       Effect.provideContext(context),
     );
-  return { commands, call, rooms };
+  return {
+    commands,
+    call,
+    rooms,
+    setupRuns,
+    launcher: Context.get(context, ThreadLauncher.ThreadLauncher),
+  };
 });
 
 describe("rooms toolkit handlers", () => {
@@ -205,6 +266,87 @@ describe("rooms toolkit handlers", () => {
         expect((yield* rooms.list).flatMap((room) => room.threadIds)).toEqual([ME]);
         const ghost = yield* call("room_move", { room: "dex", threadId: "nope" }).pipe(Effect.flip);
         expect(ghost.message).toContain("no thread");
+      }),
+    ),
+  );
+
+  it.effect("starts threads in the caller's room and replaces a thread with a handoff", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { call, commands, rooms, setupRuns, launcher } = yield* makeHarness();
+        yield* rooms.create({ slug: "dex", title: "Dex", outcome: "", section: "today" });
+        yield* rooms.setThread({ slug: "dex", threadId: ME, member: true });
+        yield* rooms.setThread({ slug: "dex", threadId: PEER, member: true });
+        yield* rooms.setNote({ slug: "dex", body: "Slice 3 is next.", threadId: ME });
+
+        const started = yield* call("start_thread", {
+          prompt: "Build slice 3.",
+          title: "Slice 3",
+          worktree: "new",
+          branch: "feat/slice-3",
+        });
+        expect(started).toMatchObject({
+          title: "Slice 3",
+          worktreePath: "/worktrees/feat/slice-3",
+          branch: "feat/slice-3",
+          rooms: ["dex"],
+        });
+        expect(yield* Ref.get(setupRuns)).toEqual(["/worktrees/feat/slice-3"]);
+        const [create, turn] = yield* Ref.get(commands);
+        expect(create).toMatchObject({
+          type: "thread.create",
+          threadId: started.threadId,
+          worktreePath: "/worktrees/feat/slice-3",
+          runtimeMode: "approval-required",
+        });
+        const firstText = turn?.type === "thread.turn.start" ? turn.message.text : "";
+        expect(firstText).toContain(`Started by thread "Me" (${ME})`);
+        expect(firstText).toMatch(/Build slice 3\.$/);
+        expect((yield* rooms.list)[0]!.threadIds).toContain(started.threadId);
+
+        const alone = yield* call("start_thread", { prompt: "Look.", title: "Solo", room: null });
+        expect(alone).toMatchObject({ worktreePath: worktree, rooms: [] });
+
+        yield* Ref.set(commands, []);
+        const elsewhere = yield* call("start_thread", {
+          prompt: "Review the API.",
+          title: "Dex review",
+          project: "dex-app",
+          provider: "Claude",
+        });
+        expect(elsewhere).toMatchObject({ worktreePath: null, branch: null });
+        const [elsewhereCreate] = yield* Ref.get(commands);
+        expect(elsewhereCreate).toMatchObject({
+          projectId: "project-2",
+          modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
+        });
+        const unknown = yield* call("start_thread", {
+          prompt: "x",
+          title: "x",
+          provider: "codex",
+          model: "gpt-9",
+        }).pipe(Effect.flip);
+        expect(unknown.message).toContain("codex (gpt-5, gpt-5-codex)");
+
+        yield* Ref.set(commands, []);
+        const replacement = yield* launcher.replace({ threadId: PEER });
+        expect(replacement).toMatchObject({
+          title: "Peer",
+          worktreePath: worktree,
+          rooms: ["dex"],
+        });
+        const replaced = yield* Ref.get(commands);
+        expect(replaced.map((command) => command.type)).toEqual([
+          "thread.create",
+          "thread.turn.start",
+          "thread.settle",
+        ]);
+        const handoff = replaced[1]?.type === "thread.turn.start" ? replaced[1].message.text : "";
+        expect(handoff).toContain(`taking over from thread "Peer" (${PEER})`);
+        expect(handoff).toContain("Slice 3 is next.");
+        expect(handoff).toContain("Shipped slice 2; slice 3 is next.");
+        expect(handoff).not.toContain("Old news.");
+        expect(replaced[2]).toMatchObject({ threadId: PEER });
       }),
     ),
   );

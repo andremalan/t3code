@@ -16,12 +16,21 @@ import * as Path from "effect/Path";
 import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import * as Rooms from "../../../rooms/Rooms.ts";
+import * as ThreadLauncher from "../../../rooms/ThreadLauncher.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { type RoomContextResult, RoomsToolkit } from "./tools.ts";
 
 const RECENT_SHELF = 25;
 
 const failWith = (message: string) => (cause: unknown) => new RoomsError({ message, cause });
+
+/** The first message of a thread another thread started. */
+export function startedByText(
+  sender: Pick<OrchestrationThreadShell, "id" | "title">,
+  prompt: string,
+): string {
+  return `[Started by thread "${sender.title}" (${sender.id}) via start_thread. A peer agent, not the user. Report back with send_to_thread when it asks for an answer.]\n\n${prompt}`;
+}
 
 /** The framing a peer message arrives with, so the receiving agent does not take it for the user. */
 export function peerMessageText(
@@ -35,6 +44,7 @@ const make = Effect.gen(function* () {
   const engine = yield* OrchestrationEngine.OrchestrationEngineService;
   const snapshots = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
   const rooms = yield* Rooms.Rooms;
+  const launcher = yield* ThreadLauncher.ThreadLauncher;
   const crypto = yield* Crypto.Crypto;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -188,6 +198,35 @@ const make = Effect.gen(function* () {
         const room = yield* resolveRoom(slug, threadId);
         const updated = yield* rooms.setNote({ slug: room.slug, body: note, threadId });
         return { room: updated.slug, length: updated.note?.body.length ?? 0 };
+      }),
+
+    start_thread: ({
+      prompt,
+      title,
+      worktree,
+      baseBranch,
+      branch,
+      room,
+      project,
+      provider,
+      model,
+    }) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* caller;
+        const sender = yield* threadShell(threadId);
+        if (!sender) return yield* new RoomsError({ message: "This thread is not known to T3." });
+        return yield* launcher.start({
+          from: sender.id,
+          text: startedByText(sender, prompt),
+          title,
+          worktree: worktree ?? "same",
+          baseBranch,
+          branch,
+          room,
+          project,
+          provider,
+          model,
+        });
       }),
 
     room_move: ({ room, threadId: target }) =>

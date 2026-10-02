@@ -1,6 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { ModelSelection } from "./orchestration.ts";
 
 /** HQ fork: rooms group threads. A room's slug is its stable id; renaming changes the title only. */
 export const RoomSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)).check(
@@ -71,6 +72,17 @@ export const RoomSetThreadInput = Schema.Struct({
   member: Schema.Boolean,
 });
 export type RoomSetThreadInput = typeof RoomSetThreadInput.Type;
+
+/** Replace: a fresh thread in the same checkout and rooms takes over, and the old one settles. */
+export const RoomReplaceThreadInput = Schema.Struct({
+  threadId: ThreadId,
+  /** Defaults to the replaced thread's model. */
+  modelSelection: Schema.optional(ModelSelection),
+});
+export type RoomReplaceThreadInput = typeof RoomReplaceThreadInput.Type;
+
+export const RoomReplaceThreadResult = Schema.Struct({ threadId: ThreadId });
+export type RoomReplaceThreadResult = typeof RoomReplaceThreadResult.Type;
 
 export class RoomsError extends Schema.TaggedError<RoomsError>()("RoomsError", {
   message: Schema.String,
