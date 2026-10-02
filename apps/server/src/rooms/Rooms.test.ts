@@ -182,3 +182,38 @@ it.effect("imports HQ rooms and shelves, resolving members to live T3 threads", 
     );
   }).pipe(Effect.provide(testLayer)),
 );
+
+it.effect("adds note revisions to a notes table written before they existed", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE hq_rooms (
+        slug TEXT PRIMARY KEY, title TEXT NOT NULL, outcome TEXT NOT NULL DEFAULT '',
+        section TEXT NOT NULL, position INTEGER NOT NULL, created_at TEXT NOT NULL, archived_at TEXT
+      )
+    `;
+    yield* sql`
+      CREATE TABLE hq_room_notes (
+        room_slug TEXT PRIMARY KEY, body TEXT NOT NULL, thread_id TEXT, updated_at TEXT NOT NULL
+      ) WITHOUT ROWID
+    `;
+    yield* sql`INSERT INTO hq_rooms VALUES ('dex', 'Dex', '', 'today', 0, '2026-10-01T00:00:00.000Z', NULL)`;
+    yield* sql`INSERT INTO hq_room_notes VALUES ('dex', 'Old note', NULL, '2026-10-01T00:00:00.000Z')`;
+
+    const rooms = yield* Rooms.Rooms.pipe(Effect.provide(Rooms.layer));
+    const [dex] = yield* rooms.list;
+    assert.deepStrictEqual(dex?.note, {
+      body: "Old note",
+      threadId: null,
+      updatedAt: "2026-10-01T00:00:00.000Z",
+      revision: 1,
+    });
+    const next = yield* rooms.setNote({
+      slug: "dex",
+      body: "New note",
+      threadId: null,
+      basedOn: 1,
+    });
+    assert.strictEqual(next.note?.revision, 2);
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, SqlitePersistenceMemory))),
+);

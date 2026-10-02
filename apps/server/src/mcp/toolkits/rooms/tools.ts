@@ -116,12 +116,21 @@ const ShelfAddTool = Tool.make("shelf_add", {
   .annotate(Tool.OpenWorld, false);
 
 const RoomNoteTool = Tool.make("room_note", {
-  description: `Replace the room's note: the shared board every thread in the room reads through room_context. Write the whole note, not a diff: where things stand, open threads of work (who has them), decisions that hold, and next steps. Keep it under ${ROOM_NOTE_MAX_LENGTH} characters; history and detail go in cc/<room>/ documents. Update it at boundaries (a slice landed, a blocker, a decision, handing off), not every turn. Read room_context first so you keep what other threads wrote. An empty note clears it.`,
+  description: `Replace the room's note: the shared board every thread in the room reads through room_context. Write the whole note, not a diff: where things stand, open threads of work (who has them), decisions that hold, and next steps. Keep it under ${ROOM_NOTE_MAX_LENGTH} characters; history and detail go in cc/<room>/ documents. Update it at boundaries (a slice landed, a blocker, a decision, handing off), not every turn. Read room_context first and pass the note's revision as basedOn (null when the room has no note): if another thread wrote in between, the update is refused so you can reread and merge. An empty note clears it.`,
   parameters: Schema.Struct({
     note: Schema.String,
+    basedOn: Schema.NullOr(Schema.Int).annotate({
+      description: "The note's revision from room_context, or null when it had no note.",
+    }),
     room: Schema.optional(RoomInput),
   }),
-  success: Schema.Struct({ room: Schema.String, length: Schema.Int }),
+  success: Schema.Struct({
+    room: Schema.String,
+    length: Schema.Int,
+    revision: Schema.NullOr(Schema.Int).annotate({
+      description: "Pass as basedOn on your next update; null after clearing.",
+    }),
+  }),
   failure: RoomsError,
   dependencies,
 })

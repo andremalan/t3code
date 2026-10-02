@@ -22,6 +22,8 @@ export const RoomNote = Schema.Struct({
   /** The thread that last wrote it; null when written from a client. */
   threadId: Schema.NullOr(ThreadId),
   updatedAt: IsoDateTime,
+  /** Goes up by one on every write; writers pass the revision they read. */
+  revision: Schema.Int,
 });
 export type RoomNote = typeof RoomNote.Type;
 
@@ -55,6 +57,8 @@ export const RoomUpdateInput = Schema.Struct({
   archived: Schema.optional(Schema.Boolean),
   /** Replaces the room note; an empty string clears it. */
   note: Schema.optional(Schema.String),
+  /** The note revision the editor read, null for no note; a stale write is refused. */
+  noteBasedOn: Schema.optional(Schema.NullOr(Schema.Int)),
 });
 export type RoomUpdateInput = typeof RoomUpdateInput.Type;
 

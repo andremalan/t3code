@@ -221,9 +221,12 @@ export async function createHqRoom(title: string, outcome: string, zone: RoomSec
   return slug;
 }
 
-/** Replaces a room's note from a client; an empty note clears it. */
-export async function setHqRoomNote(slug: string, note: string) {
-  await runRooms(roomsEnvironment.update, { slug, note });
+/**
+ * Replaces a room's note from a client; an empty note clears it. `basedOn` is the revision the
+ * editor opened (null for no note); the server refuses the write if a thread changed it meanwhile.
+ */
+export async function setHqRoomNote(slug: string, note: string, basedOn: number | null) {
+  await runRooms(roomsEnvironment.update, { slug, note, noteBasedOn: basedOn });
 }
 
 export async function archiveHqRoom(slug: string) {

@@ -19,13 +19,27 @@ const NOTE_MAX = 2000;
 /** The room's shared board, written by its threads through room_note; editable here too. */
 function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: string | null }) {
   const [draft, setDraft] = useState<string | null>(null);
+  // The revision the draft started from, so a thread's update meanwhile is not overwritten.
+  const [basedOn, setBasedOn] = useState<number | null>(null);
   const [error, setError] = useState("");
+  const edit = () => {
+    setError("");
+    setBasedOn(props.note?.revision ?? null);
+    setDraft(props.note?.body ?? "");
+  };
   const save = () => {
     if (draft === null) return;
     setError("");
-    setHqRoomNote(props.slug, draft).then(
+    setHqRoomNote(props.slug, draft, basedOn).then(
       () => setDraft(null),
-      (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure)),
+      (failure: unknown) => {
+        const message = failure instanceof Error ? failure.message : String(failure);
+        setError(
+          message.includes("changed since you read it") || message.includes("cleared since")
+            ? "A thread updated this note while you were editing. Copy your draft, cancel to see the new note, then edit again."
+            : message,
+        );
+      },
     );
   };
   return (
@@ -39,12 +53,7 @@ function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: stri
           </span>
         ) : null}
         {draft === null ? (
-          <Button
-            size="xs"
-            variant="ghost"
-            className="ml-auto"
-            onClick={() => setDraft(props.note?.body ?? "")}
-          >
+          <Button size="xs" variant="ghost" className="ml-auto" onClick={edit}>
             Edit
           </Button>
         ) : null}
