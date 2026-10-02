@@ -56,6 +56,7 @@ import { cn } from "~/lib/utils";
 
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { useRightPanelStore } from "~/rightPanelStore";
+import { useUiStateStore } from "~/uiStateStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { roomsEnvironment } from "~/state/rooms";
@@ -271,10 +272,13 @@ export function useOpenShelfDoc() {
   };
 }
 
+/** Filters the sidebar to a room. Rooms span projects, so a room also clears the project scope. */
 export function selectHqRoom(slug: string | null) {
   selected = slug;
-  if (slug) localStorage.setItem(SELECTED_KEY, slug);
-  else localStorage.removeItem(SELECTED_KEY);
+  if (slug) {
+    localStorage.setItem(SELECTED_KEY, slug);
+    useUiStateStore.getState().setSidebarProjectScopeKey(null);
+  } else localStorage.removeItem(SELECTED_KEY);
   listeners.forEach((listener) => listener());
 }
 
