@@ -131,6 +131,7 @@ function RoomRouteView() {
               <>
                 {room.outcome ? <p className="mb-6 text-sm">{room.outcome}</p> : null}
                 <RoomNoteView
+                  key={slug}
                   slug={slug}
                   note={room.note}
                   writer={

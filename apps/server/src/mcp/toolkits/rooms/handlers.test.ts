@@ -14,6 +14,7 @@ import {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -25,7 +26,10 @@ import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
 import { OrchestrationEngineService } from "../../../orchestration/Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
-import { ProjectSetupScriptRunner } from "../../../project/ProjectSetupScriptRunner.ts";
+import {
+  ProjectSetupScriptRunner,
+  type ProjectSetupScriptRunnerResult,
+} from "../../../project/ProjectSetupScriptRunner.ts";
 import { ProviderRegistry } from "../../../provider/Services/ProviderRegistry.ts";
 import * as Rooms from "../../../rooms/Rooms.ts";
 import * as ThreadLauncher from "../../../rooms/ThreadLauncher.ts";
@@ -60,14 +64,17 @@ const thread = (id: ThreadId, title: string): OrchestrationThreadShell => ({
   hasPendingUserInput: false,
   hasActionableProposedPlan: false,
 });
+const BUSY = ThreadId.make("thread-busy");
 const threads = new Map([
   [ME, thread(ME, "Me")],
   [PEER, thread(PEER, "Peer")],
+  [BUSY, { ...thread(BUSY, "Busy"), session: { status: "running" } as never }],
 ]);
 
 const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const setupRuns = yield* Ref.make<ReadonlyArray<string>>([]);
+  const setupResult = yield* Ref.make<ProjectSetupScriptRunnerResult>({ status: "no-script" });
   const dependencies = ThreadLauncher.layer.pipe(
     Layer.provideMerge(Rooms.layer),
     Layer.provideMerge(
@@ -123,7 +130,7 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
         Layer.mock(ProjectSetupScriptRunner)({
           runForThread: (input) =>
             Ref.update(setupRuns, (runs) => [...runs, input.worktreePath]).pipe(
-              Effect.as({ status: "no-script" as const }),
+              Effect.andThen(Ref.get(setupResult)),
             ),
         }),
         Layer.mock(OrchestrationEngineService)({
@@ -170,6 +177,7 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
     call,
     rooms,
     setupRuns,
+    setupResult,
     launcher: Context.get(context, ThreadLauncher.ThreadLauncher),
   };
 });
@@ -349,5 +357,66 @@ describe("rooms toolkit handlers", () => {
         expect(replaced[2]).toMatchObject({ threadId: PEER });
       }),
     ),
+  );
+
+  it.effect(
+    "refuses before creating anything, waits for blocking setup, and keeps working threads",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { call, commands, rooms, setupRuns, setupResult, launcher } = yield* makeHarness();
+          yield* rooms.create({ slug: "dex", title: "Dex", outcome: "", section: "today" });
+          yield* rooms.setThread({ slug: "dex", threadId: ME, member: true });
+
+          const badModel = yield* call("start_thread", {
+            prompt: "x",
+            title: "x",
+            worktree: "new",
+            model: "gpt-9",
+          }).pipe(Effect.flip);
+          expect(badModel.message).toContain("No installed provider model");
+          const badRoom = yield* call("start_thread", {
+            prompt: "x",
+            title: "x",
+            room: "nope",
+          }).pipe(Effect.flip);
+          expect(badRoom.message).toContain("no open room called nope");
+          expect(yield* Ref.get(commands)).toEqual([]);
+          expect(yield* Ref.get(setupRuns)).toEqual([]);
+
+          const setupDone = yield* Deferred.make<void>();
+          yield* Ref.set(setupResult, {
+            status: "started",
+            scriptId: "setup",
+            scriptName: "Setup",
+            scriptCommand: "vp i",
+            terminalId: "setup",
+            cwd: "/worktrees/x",
+            async: false,
+            completion: Deferred.await(setupDone).pipe(Effect.as({ exitCode: 0, durationMs: 1 })),
+          });
+          const waiting = yield* call("start_thread", {
+            prompt: "Build it.",
+            title: "Builder",
+            worktree: "new",
+          });
+          expect(waiting.firstTurn).toBe("after-setup");
+          expect((yield* Ref.get(commands)).map((command) => command.type)).toEqual([
+            "thread.create",
+          ]);
+          yield* Deferred.succeed(setupDone, undefined);
+          // The first turn is dispatched by a background fiber once setup finishes.
+          while ((yield* Ref.get(commands)).length < 2) yield* Effect.yieldNow;
+          expect((yield* Ref.get(commands)).map((command) => command.type)).toEqual([
+            "thread.create",
+            "thread.turn.start",
+          ]);
+
+          yield* Ref.set(commands, []);
+          const busy = yield* launcher.replace({ threadId: BUSY }).pipe(Effect.flip);
+          expect(busy.message).toContain("Busy is still working");
+          expect(yield* Ref.get(commands)).toEqual([]);
+        }),
+      ),
   );
 });
