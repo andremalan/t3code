@@ -103,5 +103,29 @@ const ShelfAddTool = Tool.make("shelf_add", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const RoomMoveTool = Tool.make("room_move", {
+  description:
+    "Move a thread into a room, taking it out of any other open room; pass room null to take it out of every room. Defaults to this thread. Use it when work belongs to a different room, or to seat a thread you started. room_context lists rooms.",
+  parameters: Schema.Struct({
+    room: Schema.NullOr(TrimmedNonEmptyString).annotate({ description: "Room slug, or null." }),
+    threadId: Schema.optional(
+      TrimmedNonEmptyString.annotate({ description: "Thread to move. Defaults to this thread." }),
+    ),
+  }),
+  success: Schema.Struct({ threadId: Schema.String, room: Schema.NullOr(Schema.String) }),
+  failure: RoomsError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Move thread to room")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 /** HQ fork: rooms for agents. Every thread gets it; the tools say so when a thread has no room. */
-export const RoomsToolkit = Toolkit.make(RoomContextTool, SendToThreadTool, ShelfAddTool);
+export const RoomsToolkit = Toolkit.make(
+  RoomContextTool,
+  SendToThreadTool,
+  ShelfAddTool,
+  RoomMoveTool,
+);

@@ -172,6 +172,20 @@ describe("rooms toolkit handlers", () => {
         const text = sent?.type === "thread.turn.start" ? sent.message.text : "";
         expect(text).toContain(`"Me" (${ME})`);
         expect(text).toMatch(/Review #7$/);
+
+        expect(yield* call("room_move", { room: "other" })).toEqual({
+          threadId: ME,
+          room: "other",
+        });
+        const moved = (yield* rooms.list).map((room) => [room.slug, room.threadIds]);
+        expect(moved).toEqual([
+          ["dex", [PEER]],
+          ["other", [ME]],
+        ]);
+        yield* call("room_move", { room: null, threadId: PEER });
+        expect((yield* rooms.list).flatMap((room) => room.threadIds)).toEqual([ME]);
+        const ghost = yield* call("room_move", { room: "dex", threadId: "nope" }).pipe(Effect.flip);
+        expect(ghost.message).toContain("no thread");
       }),
     ),
   );
