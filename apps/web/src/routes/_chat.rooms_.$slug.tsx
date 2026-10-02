@@ -2,14 +2,88 @@
 // threads (settled ones under Settled); the page holds the shelf. Shelf files open in a room
 // thread's file preview.
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo } from "react";
+import type { RoomNote } from "@t3tools/contracts";
+import { useEffect, useMemo, useState } from "react";
 
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
-import { hqRoomThreads, selectHqRoom, useHqRooms } from "../hqRooms";
+import { Button } from "../components/ui/button";
+import { hqRoomThreads, selectHqRoom, setHqRoomNote, useHqRooms } from "../hqRooms";
 import { HqShelfList } from "../hqShelf";
 import { useThreadShells } from "../state/entities";
+import { formatRelativeTimeLabel } from "../timestampFormat";
+
+const NOTE_MAX = 2000;
+
+/** The room's shared board, written by its threads through room_note; editable here too. */
+function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: string | null }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  const save = () => {
+    if (draft === null) return;
+    setError("");
+    setHqRoomNote(props.slug, draft).then(
+      () => setDraft(null),
+      (failure: unknown) => setError(failure instanceof Error ? failure.message : String(failure)),
+    );
+  };
+  return (
+    <section className="mb-6" data-testid="hq-room-note">
+      <div className="mb-2 flex items-center gap-2">
+        <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Note</h2>
+        {props.note && draft === null ? (
+          <span className="text-xs text-muted-foreground">
+            {formatRelativeTimeLabel(props.note.updatedAt)}
+            {props.writer ? ` · ${props.writer}` : ""}
+          </span>
+        ) : null}
+        {draft === null ? (
+          <Button
+            size="xs"
+            variant="ghost"
+            className="ml-auto"
+            onClick={() => setDraft(props.note?.body ?? "")}
+          >
+            Edit
+          </Button>
+        ) : null}
+      </div>
+      {draft === null ? (
+        props.note ? (
+          <p className="text-sm whitespace-pre-wrap">{props.note.body}</p>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            No note yet. Threads in this room write where things stand here.
+          </p>
+        )
+      ) : (
+        <div className="flex flex-col gap-2">
+          <textarea
+            value={draft}
+            maxLength={NOTE_MAX}
+            rows={8}
+            autoFocus
+            onChange={(event) => setDraft(event.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+          />
+          <div className="flex items-center gap-2">
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            <span className="ml-auto text-xs text-muted-foreground">
+              {draft.length}/{NOTE_MAX}
+            </span>
+            <Button size="xs" variant="outline" onClick={() => setDraft(null)}>
+              Cancel
+            </Button>
+            <Button size="xs" onClick={save}>
+              Save
+            </Button>
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
 
 function RoomRouteView() {
   const { slug } = Route.useParams();
@@ -56,6 +130,18 @@ function RoomRouteView() {
             ) : (
               <>
                 {room.outcome ? <p className="mb-6 text-sm">{room.outcome}</p> : null}
+                <RoomNoteView
+                  slug={slug}
+                  note={room.note}
+                  writer={
+                    room.note?.threadId
+                      ? (threads.find((thread) => thread.id === room.note?.threadId)?.title ??
+                        "a thread")
+                      : room.note
+                        ? "you"
+                        : null
+                  }
+                />
                 <HqShelfList slug={slug} threads={threadRefs} />
               </>
             )}

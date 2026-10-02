@@ -81,6 +81,7 @@ const make = Effect.gen(function* () {
       title: room.title,
       outcome: room.outcome,
       archived: room.archivedAt !== null,
+      note: room.note,
       threads: shells.flatMap((thread) =>
         thread && thread.archivedAt === null
           ? [
@@ -179,6 +180,14 @@ const make = Effect.gen(function* () {
         }
         const added = yield* rooms.addDocument({ slug: room.slug, ref: resolved, title, threadId });
         return { room: room.slug, ...added };
+      }),
+
+    room_note: ({ note, room: slug }) =>
+      Effect.gen(function* () {
+        const { threadId } = yield* caller;
+        const room = yield* resolveRoom(slug, threadId);
+        const updated = yield* rooms.setNote({ slug: room.slug, body: note, threadId });
+        return { room: updated.slug, length: updated.note?.body.length ?? 0 };
       }),
 
     room_move: ({ room, threadId: target }) =>

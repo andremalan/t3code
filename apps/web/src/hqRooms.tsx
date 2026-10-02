@@ -10,6 +10,7 @@ import {
 import type {
   EnvironmentId,
   RoomList,
+  RoomNote,
   RoomSection,
   RoomShelfDoc,
   ScopedThreadRef,
@@ -68,6 +69,7 @@ export type HqRoom = {
   slug: string;
   label: string;
   outcome: string;
+  note: RoomNote | null;
   zone: RoomSection;
   threadIds: ReadonlySet<string>;
 };
@@ -110,6 +112,7 @@ const roomsAtom = Atom.make((get) => {
         slug: room.slug,
         label: room.title,
         outcome: room.outcome,
+        note: room.note,
         zone: room.section,
         threadIds: new Set(room.threadIds),
       })),
@@ -235,6 +238,11 @@ export async function createHqRoom(title: string, outcome: string, zone: RoomSec
   if (!slug) throw new Error("Give the room a name with letters or numbers.");
   await runRooms(roomsEnvironment.create, { slug, title: title.trim(), outcome, section: zone });
   return slug;
+}
+
+/** Replaces a room's note from a client; an empty note clears it. */
+export async function setHqRoomNote(slug: string, note: string) {
+  await runRooms(roomsEnvironment.update, { slug, note });
 }
 
 export async function archiveHqRoom(slug: string) {

@@ -12,6 +12,18 @@ export const ROOM_SECTIONS = ["today", "permanent", "backlog"] as const;
 export const RoomSection = Schema.Literals(ROOM_SECTIONS);
 export type RoomSection = typeof RoomSection.Type;
 
+/** Longest room note, in characters: a board of where things stand, not a log. */
+export const ROOM_NOTE_MAX_LENGTH = 2000;
+
+/** A room's shared board: where the work stands, open threads of work, next steps. Replaced whole. */
+export const RoomNote = Schema.Struct({
+  body: Schema.String,
+  /** The thread that last wrote it; null when written from a client. */
+  threadId: Schema.NullOr(ThreadId),
+  updatedAt: IsoDateTime,
+});
+export type RoomNote = typeof RoomNote.Type;
+
 export const Room = Schema.Struct({
   slug: RoomSlug,
   title: TrimmedNonEmptyString,
@@ -19,6 +31,7 @@ export const Room = Schema.Struct({
   section: RoomSection,
   archivedAt: Schema.NullOr(IsoDateTime),
   threadIds: Schema.Array(ThreadId),
+  note: Schema.NullOr(RoomNote),
 });
 export type Room = typeof Room.Type;
 
@@ -39,6 +52,8 @@ export const RoomUpdateInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   outcome: Schema.optional(Schema.String),
   archived: Schema.optional(Schema.Boolean),
+  /** Replaces the room note; an empty string clears it. */
+  note: Schema.optional(Schema.String),
 });
 export type RoomUpdateInput = typeof RoomUpdateInput.Type;
 
