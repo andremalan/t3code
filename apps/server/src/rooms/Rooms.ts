@@ -1,6 +1,7 @@
 import * as NodeSqlite from "node:sqlite";
 
 import {
+  ROOM_NOTE_MAX_LENGTH,
   ROOM_SECTIONS,
   type Room,
   type RoomCreateInput,
@@ -37,6 +38,12 @@ export class Rooms extends Context.Service<
     readonly create: (input: RoomCreateInput) => Effect.Effect<Room, RoomsError>;
     /** Renames, edits the outcome, archives or unarchives. */
     readonly update: (input: RoomUpdateInput) => Effect.Effect<Room, RoomsError>;
+    /** Replaces a room's note (an empty body clears it), recording the thread that wrote it. */
+    readonly setNote: (input: {
+      readonly slug: string;
+      readonly body: string;
+      readonly threadId: string | null;
+    }) => Effect.Effect<Room, RoomsError>;
     readonly reorder: (input: RoomReorderInput) => Effect.Effect<void, RoomsError>;
     readonly setThread: (input: RoomSetThreadInput) => Effect.Effect<void, RoomsError>;
     /** Puts a thread in one open room, taking it out of the others; null takes it out of all. */
@@ -92,6 +99,14 @@ const ensureSchema = Effect.gen(function* () {
       thread_id TEXT,
       added_at TEXT NOT NULL,
       PRIMARY KEY (room_slug, ref)
+    ) WITHOUT ROWID
+  `;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS hq_room_notes (
+      room_slug TEXT PRIMARY KEY REFERENCES hq_rooms(slug) ON DELETE CASCADE,
+      body TEXT NOT NULL,
+      thread_id TEXT,
+      updated_at TEXT NOT NULL
     ) WITHOUT ROWID
   `;
 });
@@ -171,6 +186,9 @@ const listRooms = Effect.gen(function* () {
     section: string;
     archivedAt: string | null;
     threadIds: string;
+    noteBody: string | null;
+    noteThreadId: string | null;
+    noteUpdatedAt: string | null;
   }>`
     SELECT
       slug,
@@ -182,15 +200,26 @@ const listRooms = Effect.gen(function* () {
         SELECT json_group_array(thread_id)
         FROM hq_room_threads t
         WHERE t.room_slug = r.slug
-      ) AS "threadIds"
+      ) AS "threadIds",
+      n.body AS "noteBody",
+      n.thread_id AS "noteThreadId",
+      n.updated_at AS "noteUpdatedAt"
     FROM hq_rooms r
+    LEFT JOIN hq_room_notes n ON n.room_slug = r.slug
     ORDER BY
       CASE section WHEN 'today' THEN 0 WHEN 'permanent' THEN 1 ELSE 2 END,
       position,
       slug
   `;
   return yield* decodeRoomList(
-    rows.map((row) => ({ ...row, threadIds: JSON.parse(row.threadIds) as unknown })),
+    rows.map(({ noteBody, noteThreadId, noteUpdatedAt, ...row }) => ({
+      ...row,
+      threadIds: JSON.parse(row.threadIds) as unknown,
+      note:
+        noteBody === null
+          ? null
+          : { body: noteBody, threadId: noteThreadId, updatedAt: noteUpdatedAt },
+    })),
   );
 });
 
@@ -246,11 +275,48 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const writeNote = (slug: string, body: string, threadId: string | null) =>
+    Effect.gen(function* () {
+      const trimmed = body.trim();
+      if (trimmed.length > ROOM_NOTE_MAX_LENGTH) {
+        return yield* new RoomsError({
+          message: `A room note holds at most ${ROOM_NOTE_MAX_LENGTH} characters (this one has ${trimmed.length}). Keep where things stand and what is next; put history in a shelf document.`,
+        });
+      }
+      if (trimmed === "") {
+        yield* sql`DELETE FROM hq_room_notes WHERE room_slug = ${slug}`;
+        return;
+      }
+      const updatedAt = yield* nowIso;
+      yield* sql`
+        INSERT INTO hq_room_notes (room_slug, body, thread_id, updated_at)
+        VALUES (${slug}, ${trimmed}, ${threadId}, ${updatedAt})
+        ON CONFLICT (room_slug) DO UPDATE SET
+          body = excluded.body, thread_id = excluded.thread_id, updated_at = excluded.updated_at
+      `;
+    });
+
+  const setNote = (input: {
+    readonly slug: string;
+    readonly body: string;
+    readonly threadId: string | null;
+  }) =>
+    run(
+      "Could not update the room note.",
+      Effect.gen(function* () {
+        yield* find(input.slug);
+        yield* writeNote(input.slug, input.body, input.threadId);
+        yield* publish;
+        return yield* find(input.slug);
+      }),
+    );
+
   const update = (input: RoomUpdateInput) =>
     run(
       "Could not update the room.",
       Effect.gen(function* () {
         yield* find(input.slug);
+        if (input.note !== undefined) yield* writeNote(input.slug, input.note, null);
         const archivedAt = yield* nowIso;
         yield* sql`
           UPDATE hq_rooms SET
@@ -462,6 +528,7 @@ export const make = Effect.gen(function* () {
   return Rooms.of({
     create,
     update,
+    setNote,
     reorder,
     setThread,
     moveThread,

@@ -173,6 +173,25 @@ describe("rooms toolkit handlers", () => {
         expect(text).toContain(`"Me" (${ME})`);
         expect(text).toMatch(/Review #7$/);
 
+        expect(context.rooms[0]!.note).toBeNull();
+        expect(
+          yield* call("room_note", { note: "  Status: review open.\nNext: merge.  " }),
+        ).toEqual({
+          room: "dex",
+          length: 33,
+        });
+        const noted = (yield* call("room_context", {})).rooms[0]!.note;
+        expect(noted).toMatchObject({ body: "Status: review open.\nNext: merge.", threadId: ME });
+        const long = yield* call("room_note", { note: "x".repeat(2001) }).pipe(Effect.flip);
+        expect(long.message).toContain("at most 2000");
+        yield* rooms.update({ slug: "dex", note: "Edited by Andre" });
+        expect((yield* rooms.list)[0]!.note).toMatchObject({
+          body: "Edited by Andre",
+          threadId: null,
+        });
+        yield* call("room_note", { note: "" });
+        expect((yield* rooms.list)[0]!.note).toBeNull();
+
         expect(yield* call("room_move", { room: "other" })).toEqual({
           threadId: ME,
           room: "other",

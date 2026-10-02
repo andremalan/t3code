@@ -1,4 +1,10 @@
-import { RoomsError, RoomShelfDoc, TrimmedNonEmptyString } from "@t3tools/contracts";
+import {
+  ROOM_NOTE_MAX_LENGTH,
+  RoomNote,
+  RoomsError,
+  RoomShelfDoc,
+  TrimmedNonEmptyString,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
@@ -34,6 +40,10 @@ export const RoomContextEntry = Schema.Struct({
   title: Schema.String,
   outcome: Schema.String,
   archived: Schema.Boolean,
+  note: Schema.NullOr(RoomNote).annotate({
+    description:
+      "The room's shared board: where things stand and what is next. Null until written.",
+  }),
   threads: Schema.Array(RoomThreadEntry),
   shelf: Schema.Struct({
     total: Schema.Int,
@@ -51,7 +61,7 @@ export type RoomContextResult = typeof RoomContextResult.Type;
 
 const RoomContextTool = Tool.make("room_context", {
   description:
-    "Read this thread's room: its outcome, the threads in it with their status, and the newest shelf documents (PRs, files under cc/<room>/ in member worktrees, recorded links). Read it at natural work boundaries.",
+    "Read this thread's room: its outcome, its note (the shared board of where things stand), the threads in it with their status, and the newest shelf documents (PRs, files under cc/<room>/ in member worktrees, recorded links). Read it when you start, after compaction, and at natural work boundaries.",
   parameters: Schema.Struct({ room: Schema.optional(RoomInput) }),
   success: RoomContextResult,
   failure: RoomsError,
@@ -103,6 +113,22 @@ const ShelfAddTool = Tool.make("shelf_add", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const RoomNoteTool = Tool.make("room_note", {
+  description: `Replace the room's note: the shared board every thread in the room reads through room_context. Write the whole note, not a diff: where things stand, open threads of work (who has them), decisions that hold, and next steps. Keep it under ${ROOM_NOTE_MAX_LENGTH} characters; history and detail go in cc/<room>/ documents. Update it at boundaries (a slice landed, a blocker, a decision, handing off), not every turn. Read room_context first so you keep what other threads wrote. An empty note clears it.`,
+  parameters: Schema.Struct({
+    note: Schema.String,
+    room: Schema.optional(RoomInput),
+  }),
+  success: Schema.Struct({ room: Schema.String, length: Schema.Int }),
+  failure: RoomsError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Update room note")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 const RoomMoveTool = Tool.make("room_move", {
   description:
     "Move a thread into a room, taking it out of any other open room; pass room null to take it out of every room. Defaults to this thread. Use it when work belongs to a different room, or to seat a thread you started. room_context lists rooms.",
@@ -127,5 +153,6 @@ export const RoomsToolkit = Toolkit.make(
   RoomContextTool,
   SendToThreadTool,
   ShelfAddTool,
+  RoomNoteTool,
   RoomMoveTool,
 );
