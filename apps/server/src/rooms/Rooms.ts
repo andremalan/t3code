@@ -39,6 +39,11 @@ export class Rooms extends Context.Service<
     readonly update: (input: RoomUpdateInput) => Effect.Effect<Room, RoomsError>;
     readonly reorder: (input: RoomReorderInput) => Effect.Effect<void, RoomsError>;
     readonly setThread: (input: RoomSetThreadInput) => Effect.Effect<void, RoomsError>;
+    /** Puts a thread in one open room, taking it out of the others; null takes it out of all. */
+    readonly moveThread: (input: {
+      readonly threadId: string;
+      readonly slug: string | null;
+    }) => Effect.Effect<void, RoomsError>;
     /** Recorded documents, files under `cc/<slug>/` in member worktrees, and member threads' PRs. */
     readonly shelf: (slug: string) => Effect.Effect<RoomShelf, RoomsError>;
     /**
@@ -301,6 +306,38 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const moveThread = (input: { readonly threadId: string; readonly slug: string | null }) =>
+    run(
+      "Could not move the thread.",
+      Effect.gen(function* () {
+        if (input.slug !== null) {
+          const room = yield* find(input.slug);
+          if (room.archivedAt) {
+            return yield* new RoomsError({ message: `The room ${input.slug} is archived.` });
+          }
+        }
+        const addedAt = yield* nowIso;
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            // Archived rooms keep their history.
+            yield* sql`
+              DELETE FROM hq_room_threads
+              WHERE thread_id = ${input.threadId}
+                AND room_slug IS NOT ${input.slug}
+                AND room_slug IN (SELECT slug FROM hq_rooms WHERE archived_at IS NULL)
+            `;
+            if (input.slug !== null) {
+              yield* sql`
+                INSERT OR IGNORE INTO hq_room_threads (room_slug, thread_id, added_at)
+                VALUES (${input.slug}, ${input.threadId}, ${addedAt})
+              `;
+            }
+          }),
+        );
+        yield* publish;
+      }),
+    );
+
   const shelf = (slug: string) =>
     run(
       "Could not read the shelf.",
@@ -422,7 +459,17 @@ export const make = Effect.gen(function* () {
     { bufferSize: 1, strategy: "sliding" },
   );
 
-  return Rooms.of({ create, update, reorder, setThread, shelf, addDocument, list, stream });
+  return Rooms.of({
+    create,
+    update,
+    reorder,
+    setThread,
+    moveThread,
+    shelf,
+    addDocument,
+    list,
+    stream,
+  });
 });
 
 export const layer = Layer.effect(Rooms, make);

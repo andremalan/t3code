@@ -180,6 +180,16 @@ const make = Effect.gen(function* () {
         const added = yield* rooms.addDocument({ slug: room.slug, ref: resolved, title, threadId });
         return { room: room.slug, ...added };
       }),
+
+    room_move: ({ room, threadId: target }) =>
+      Effect.gen(function* () {
+        const threadId = target ?? (yield* caller).threadId;
+        if (!(yield* threadShell(ThreadId.make(threadId)))) {
+          return yield* new RoomsError({ message: `There is no thread ${threadId}.` });
+        }
+        yield* rooms.moveThread({ threadId, slug: room });
+        return { threadId, room };
+      }),
   });
 });
 
