@@ -52,6 +52,8 @@ export interface StartedThread {
   readonly worktreePath: string | null;
   readonly branch: string | null;
   readonly rooms: ReadonlyArray<string>;
+  /** "after-setup" when the project's setup script must finish before the agent starts. */
+  readonly firstTurn: "started" | "after-setup";
 }
 
 /**
@@ -176,7 +178,27 @@ export const make = Effect.gen(function* () {
   const start = (input: StartThreadInput) =>
     Effect.gen(function* () {
       const source: OrchestrationThreadShell = yield* shellOf(input.from);
+      // Everything that can be refused is checked before a worktree or thread exists.
       const project = yield* resolveProject(input.project, source.projectId);
+      const modelSelection =
+        input.modelSelection ??
+        (input.provider !== undefined || input.model !== undefined
+          ? yield* resolveModel(input.provider, input.model)
+          : source.modelSelection);
+      const seated =
+        input.room === undefined
+          ? (yield* openRoomsOf(source.id)).map((room) => room.slug)
+          : input.room === null
+            ? []
+            : [input.room];
+      const open = new Set(
+        (yield* rooms.list).filter((room) => room.archivedAt === null).map((room) => room.slug),
+      );
+      const missing = seated.find((slug) => !open.has(slug));
+      if (missing !== undefined) {
+        return yield* new RoomsError({ message: `There is no open room called ${missing}.` });
+      }
+
       const ownProject = project.id === source.projectId;
       // Another project's "same" checkout is its root.
       let worktreePath = ownProject ? source.worktreePath : null;
@@ -199,12 +221,6 @@ export const make = Effect.gen(function* () {
       }
 
       const threadId = ThreadId.make(yield* uuid);
-      const createdAt = yield* nowIso;
-      const modelSelection =
-        input.modelSelection ??
-        (input.provider !== undefined || input.model !== undefined
-          ? yield* resolveModel(input.provider, input.model)
-          : source.modelSelection);
       yield* engine
         .dispatch({
           type: "thread.create",
@@ -217,29 +233,15 @@ export const make = Effect.gen(function* () {
           interactionMode: source.interactionMode,
           branch,
           worktreePath,
-          createdAt,
+          createdAt: yield* nowIso,
         })
         .pipe(Effect.mapError(fail("Could not create the thread.")));
-
-      const seated =
-        input.room === undefined
-          ? (yield* openRoomsOf(source.id)).map((room) => room.slug)
-          : input.room === null
-            ? []
-            : [input.room];
       yield* Effect.forEach(seated, (slug) => rooms.setThread({ slug, threadId, member: true }), {
         discard: true,
       });
 
-      if (input.worktree === "new" && worktreePath) {
-        // The agent can start while dependencies install; the script runs in a thread terminal.
-        yield* setupScripts
-          .runForThread({ threadId, projectId: project.id, worktreePath })
-          .pipe(Effect.ignoreCause({ log: true }));
-      }
-
-      yield* engine
-        .dispatch({
+      const firstTurn = Effect.gen(function* () {
+        yield* engine.dispatch({
           type: "thread.turn.start",
           commandId: yield* commandId("start-thread-turn"),
           threadId,
@@ -253,10 +255,50 @@ export const make = Effect.gen(function* () {
           runtimeMode: source.runtimeMode,
           interactionMode: source.interactionMode,
           createdAt: yield* nowIso,
-        })
-        .pipe(Effect.mapError(fail("The thread exists but its first turn did not start.")));
+        });
+      });
 
-      return { threadId, title: input.title, worktreePath, branch, rooms: seated };
+      // A project whose setup script is not `async` wants the agent to wait for it. The caller
+      // does not: the first turn follows the script in the background.
+      const setup =
+        input.worktree === "new" && worktreePath
+          ? yield* setupScripts
+              .runForThread({
+                threadId,
+                projectId: project.id,
+                worktreePath,
+                observeCompletion: {},
+              })
+              .pipe(Effect.orElseSucceed(() => null))
+          : null;
+      const waitForSetup =
+        setup?.status === "started" && !setup.async ? setup.completion : undefined;
+      if (waitForSetup) {
+        yield* waitForSetup.pipe(
+          Effect.andThen(firstTurn),
+          Effect.tapCause((cause) =>
+            Effect.logWarning("start_thread could not start the first turn after setup", {
+              threadId,
+              cause,
+            }),
+          ),
+          Effect.ignore,
+          Effect.forkDetach,
+        );
+      } else {
+        yield* firstTurn.pipe(
+          Effect.mapError(fail("The thread exists but its first turn did not start.")),
+        );
+      }
+
+      return {
+        threadId,
+        title: input.title,
+        worktreePath,
+        branch,
+        rooms: seated,
+        firstTurn: waitForSetup ? ("after-setup" as const) : ("started" as const),
+      };
     });
 
   const replace = (input: {
@@ -265,6 +307,13 @@ export const make = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       const old = yield* shellOf(input.threadId);
+      // Settling refuses a working thread; check first so a refusal never leaves two agents in one
+      // checkout.
+      if (old.session?.status === "starting" || old.session?.status === "running") {
+        return yield* new RoomsError({
+          message: `${old.title} is still working. Stop or interrupt it, then replace it.`,
+        });
+      }
       const detail = yield* snapshots.getThreadDetailById(old.id, { activityKinds: [] }).pipe(
         Effect.map(Option.getOrNull),
         Effect.orElseSucceed(() => null),

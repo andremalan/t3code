@@ -164,6 +164,10 @@ const StartThreadTool = Tool.make("start_thread", {
     worktreePath: Schema.NullOr(Schema.String),
     branch: Schema.NullOr(Schema.String),
     rooms: Schema.Array(Schema.String),
+    firstTurn: Schema.Literals(["started", "after-setup"]).annotate({
+      description:
+        "after-setup: the project's setup script runs first; the agent starts when it ends.",
+    }),
   }),
   failure: RoomsError,
   dependencies,
