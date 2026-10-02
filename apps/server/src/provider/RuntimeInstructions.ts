@@ -5,7 +5,7 @@ When the t3-code MCP server exposes link_pull_request, you must use it to regist
 // HQ fork: rooms replace per-session working-state files. A thread's own context survives
 // compaction through the provider's summary; the room note is what threads share.
 const ROOMS_INSTRUCTIONS = `<rooms>
-A T3 thread can belong to a room: a workstream with an outcome, member threads, a shelf of deliverables and a shared note. If the t3-code MCP server exposes room_context, call it when you start work and after compaction; if this thread is in a room, follow its outcome and note. Update the note with room_note at boundaries (a slice landed, a blocker, a decision, a handoff), replacing it whole and keeping it short. Put documents in cc/<room>/ in your worktree to shelve them.
+A T3 thread can belong to a room: a workstream with an outcome, member threads, a shelf of deliverables and a shared note. If the t3-code MCP server exposes room_context, call it when you start work and after compaction; if this thread is in a room, follow its outcome and note. Update the note with room_note at boundaries (a slice landed, a blocker, a decision, a handoff), replacing it whole and keeping it short. Put documents in cc/<room>/ in your worktree to shelve them. To run work in parallel, start a thread with start_thread; it joins your room.
 </rooms>`;
 
 /**
