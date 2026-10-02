@@ -243,22 +243,40 @@ describe("rooms toolkit handlers", () => {
         expect(text).toMatch(/Review #7$/);
 
         expect(context.rooms[0]!.note).toBeNull();
-        expect(
-          yield* call("room_note", { note: "  Status: review open.\nNext: merge.  " }),
-        ).toEqual({
-          room: "dex",
-          length: 33,
+        const first = yield* call("room_note", {
+          note: "  Status: review open.\nNext: merge.  ",
+          basedOn: null,
         });
+        expect(first).toMatchObject({ room: "dex", length: 33 });
         const noted = (yield* call("room_context", {})).rooms[0]!.note;
-        expect(noted).toMatchObject({ body: "Status: review open.\nNext: merge.", threadId: ME });
-        const long = yield* call("room_note", { note: "x".repeat(2001) }).pipe(Effect.flip);
-        expect(long.message).toContain("at most 2000");
-        yield* rooms.update({ slug: "dex", note: "Edited by Andre" });
-        expect((yield* rooms.list)[0]!.note).toMatchObject({
-          body: "Edited by Andre",
-          threadId: null,
+        expect(noted).toMatchObject({
+          body: "Status: review open.\nNext: merge.",
+          threadId: ME,
+          revision: 1,
         });
-        yield* call("room_note", { note: "" });
+        const long = yield* call("room_note", {
+          note: "x".repeat(2001),
+          basedOn: first.revision,
+        }).pipe(Effect.flip);
+        expect(long.message).toContain("at most 2000");
+
+        // Andre edits the note from the room page, based on the version he opened.
+        yield* rooms.update({ slug: "dex", note: "Edited by Andre", noteBasedOn: first.revision });
+        const edited = (yield* rooms.list)[0]!.note!;
+        expect(edited).toMatchObject({ body: "Edited by Andre", threadId: null, revision: 2 });
+        // A thread still holding the first version is refused, and told how to recover.
+        const stale = yield* call("room_note", { note: "Mine", basedOn: first.revision }).pipe(
+          Effect.flip,
+        );
+        expect(stale.message).toContain("changed since you read it");
+        expect(stale.message).toContain("retry with basedOn 2");
+        const staleEdit = yield* rooms
+          .update({ slug: "dex", note: "Old tab", noteBasedOn: null })
+          .pipe(Effect.flip);
+        expect(staleEdit.message).toContain("changed since you read it");
+        expect((yield* rooms.list)[0]!.note?.body).toBe("Edited by Andre");
+
+        yield* call("room_note", { note: "", basedOn: edited.revision });
         expect((yield* rooms.list)[0]!.note).toBeNull();
 
         expect(yield* call("room_move", { room: "other" })).toEqual({
@@ -285,7 +303,12 @@ describe("rooms toolkit handlers", () => {
         yield* rooms.create({ slug: "dex", title: "Dex", outcome: "", section: "today" });
         yield* rooms.setThread({ slug: "dex", threadId: ME, member: true });
         yield* rooms.setThread({ slug: "dex", threadId: PEER, member: true });
-        yield* rooms.setNote({ slug: "dex", body: "Slice 3 is next.", threadId: ME });
+        yield* rooms.setNote({
+          slug: "dex",
+          body: "Slice 3 is next.",
+          threadId: ME,
+          basedOn: null,
+        });
 
         const started = yield* call("start_thread", {
           prompt: "Build slice 3.",

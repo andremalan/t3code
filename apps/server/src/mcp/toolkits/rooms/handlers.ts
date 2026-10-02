@@ -192,12 +192,16 @@ const make = Effect.gen(function* () {
         return { room: room.slug, ...added };
       }),
 
-    room_note: ({ note, room: slug }) =>
+    room_note: ({ note, basedOn, room: slug }) =>
       Effect.gen(function* () {
         const { threadId } = yield* caller;
         const room = yield* resolveRoom(slug, threadId);
-        const updated = yield* rooms.setNote({ slug: room.slug, body: note, threadId });
-        return { room: updated.slug, length: updated.note?.body.length ?? 0 };
+        const updated = yield* rooms.setNote({ slug: room.slug, body: note, threadId, basedOn });
+        return {
+          room: updated.slug,
+          length: updated.note?.body.length ?? 0,
+          revision: updated.note?.revision ?? null,
+        };
       }),
 
     start_thread: ({

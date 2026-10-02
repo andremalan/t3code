@@ -38,11 +38,16 @@ export class Rooms extends Context.Service<
     readonly create: (input: RoomCreateInput) => Effect.Effect<Room, RoomsError>;
     /** Renames, edits the outcome, archives or unarchives. */
     readonly update: (input: RoomUpdateInput) => Effect.Effect<Room, RoomsError>;
-    /** Replaces a room's note (an empty body clears it), recording the thread that wrote it. */
+    /**
+     * Replaces a room's note (an empty body clears it), recording the thread that wrote it.
+     * `basedOn` is the note revision the writer read (null for no note); a write based on an older
+     * revision is refused so the writer can reread and merge.
+     */
     readonly setNote: (input: {
       readonly slug: string;
       readonly body: string;
       readonly threadId: string | null;
+      readonly basedOn: number | null;
     }) => Effect.Effect<Room, RoomsError>;
     readonly reorder: (input: RoomReorderInput) => Effect.Effect<void, RoomsError>;
     readonly setThread: (input: RoomSetThreadInput) => Effect.Effect<void, RoomsError>;
@@ -106,9 +111,17 @@ const ensureSchema = Effect.gen(function* () {
       room_slug TEXT PRIMARY KEY REFERENCES hq_rooms(slug) ON DELETE CASCADE,
       body TEXT NOT NULL,
       thread_id TEXT,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      revision INTEGER NOT NULL DEFAULT 1
     ) WITHOUT ROWID
   `;
+  // Added after the table first shipped.
+  const noteColumns = yield* sql<{
+    name: string;
+  }>`SELECT name FROM pragma_table_info('hq_room_notes')`;
+  if (!noteColumns.some((column) => column.name === "revision")) {
+    yield* sql`ALTER TABLE hq_room_notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`;
+  }
 });
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
@@ -189,6 +202,7 @@ const listRooms = Effect.gen(function* () {
     noteBody: string | null;
     noteThreadId: string | null;
     noteUpdatedAt: string | null;
+    noteRevision: number | null;
   }>`
     SELECT
       slug,
@@ -203,7 +217,8 @@ const listRooms = Effect.gen(function* () {
       ) AS "threadIds",
       n.body AS "noteBody",
       n.thread_id AS "noteThreadId",
-      n.updated_at AS "noteUpdatedAt"
+      n.updated_at AS "noteUpdatedAt",
+      n.revision AS "noteRevision"
     FROM hq_rooms r
     LEFT JOIN hq_room_notes n ON n.room_slug = r.slug
     ORDER BY
@@ -212,13 +227,18 @@ const listRooms = Effect.gen(function* () {
       slug
   `;
   return yield* decodeRoomList(
-    rows.map(({ noteBody, noteThreadId, noteUpdatedAt, ...row }) => ({
+    rows.map(({ noteBody, noteThreadId, noteUpdatedAt, noteRevision, ...row }) => ({
       ...row,
       threadIds: JSON.parse(row.threadIds) as unknown,
       note:
         noteBody === null
           ? null
-          : { body: noteBody, threadId: noteThreadId, updatedAt: noteUpdatedAt },
+          : {
+              body: noteBody,
+              threadId: noteThreadId,
+              updatedAt: noteUpdatedAt,
+              revision: noteRevision,
+            },
     })),
   );
 });
@@ -275,8 +295,28 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const writeNote = (slug: string, body: string, threadId: string | null) =>
+  const writeNote = (
+    slug: string,
+    body: string,
+    threadId: string | null,
+    basedOn: number | null | undefined,
+  ) =>
     Effect.gen(function* () {
+      const [current] = yield* sql<{
+        updatedAt: string;
+        threadId: string | null;
+        revision: number;
+      }>`
+        SELECT updated_at AS "updatedAt", thread_id AS "threadId", revision
+        FROM hq_room_notes WHERE room_slug = ${slug}
+      `;
+      if (basedOn !== undefined && (current?.revision ?? null) !== basedOn) {
+        return yield* new RoomsError({
+          message: current
+            ? `The room note changed since you read it: ${current.threadId ? `thread ${current.threadId}` : "Andre"} wrote revision ${current.revision} at ${current.updatedAt}. Read room_context again, merge your change into the current note, and retry with basedOn ${current.revision}.`
+            : "The room note was cleared since you read it. Read room_context again and retry with basedOn null.",
+        });
+      }
       const trimmed = body.trim();
       if (trimmed.length > ROOM_NOTE_MAX_LENGTH) {
         return yield* new RoomsError({
@@ -289,10 +329,13 @@ export const make = Effect.gen(function* () {
       }
       const updatedAt = yield* nowIso;
       yield* sql`
-        INSERT INTO hq_room_notes (room_slug, body, thread_id, updated_at)
-        VALUES (${slug}, ${trimmed}, ${threadId}, ${updatedAt})
+        INSERT INTO hq_room_notes (room_slug, body, thread_id, updated_at, revision)
+        VALUES (${slug}, ${trimmed}, ${threadId}, ${updatedAt}, ${(current?.revision ?? 0) + 1})
         ON CONFLICT (room_slug) DO UPDATE SET
-          body = excluded.body, thread_id = excluded.thread_id, updated_at = excluded.updated_at
+          body = excluded.body,
+          thread_id = excluded.thread_id,
+          updated_at = excluded.updated_at,
+          revision = excluded.revision
       `;
     });
 
@@ -300,12 +343,16 @@ export const make = Effect.gen(function* () {
     readonly slug: string;
     readonly body: string;
     readonly threadId: string | null;
+    readonly basedOn: number | null;
   }) =>
     run(
       "Could not update the room note.",
       Effect.gen(function* () {
         yield* find(input.slug);
-        yield* writeNote(input.slug, input.body, input.threadId);
+        // One transaction, so no write lands between the version check and this one.
+        yield* sql.withTransaction(
+          writeNote(input.slug, input.body, input.threadId, input.basedOn),
+        );
         yield* publish;
         return yield* find(input.slug);
       }),
@@ -316,7 +363,9 @@ export const make = Effect.gen(function* () {
       "Could not update the room.",
       Effect.gen(function* () {
         yield* find(input.slug);
-        if (input.note !== undefined) yield* writeNote(input.slug, input.note, null);
+        if (input.note !== undefined) {
+          yield* sql.withTransaction(writeNote(input.slug, input.note, null, input.noteBasedOn));
+        }
         const archivedAt = yield* nowIso;
         yield* sql`
           UPDATE hq_rooms SET
