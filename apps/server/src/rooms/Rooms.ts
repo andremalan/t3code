@@ -115,12 +115,17 @@ const ensureSchema = Effect.gen(function* () {
       revision INTEGER NOT NULL DEFAULT 1
     ) WITHOUT ROWID
   `;
-  // Added after the table first shipped.
+  // Added after the table first shipped. Another process (the CLI import, say) may add it first.
   const noteColumns = yield* sql<{
     name: string;
   }>`SELECT name FROM pragma_table_info('hq_room_notes')`;
   if (!noteColumns.some((column) => column.name === "revision")) {
-    yield* sql`ALTER TABLE hq_room_notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`;
+    yield* sql`ALTER TABLE hq_room_notes ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`.pipe(
+      Effect.catchIf(
+        (error) => String(error).includes("duplicate column"),
+        () => Effect.void,
+      ),
+    );
   }
 });
 
@@ -295,12 +300,7 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const writeNote = (
-    slug: string,
-    body: string,
-    threadId: string | null,
-    basedOn: number | null | undefined,
-  ) =>
+  const writeNote = (slug: string, body: string, threadId: string | null, basedOn: number | null) =>
     Effect.gen(function* () {
       const [current] = yield* sql<{
         updatedAt: string;
@@ -310,11 +310,11 @@ export const make = Effect.gen(function* () {
         SELECT updated_at AS "updatedAt", thread_id AS "threadId", revision
         FROM hq_room_notes WHERE room_slug = ${slug}
       `;
-      if (basedOn !== undefined && (current?.revision ?? null) !== basedOn) {
+      if ((current?.revision ?? null) !== basedOn) {
         return yield* new RoomsError({
           message: current
             ? `The room note changed since you read it: ${current.threadId ? `thread ${current.threadId}` : "Andre"} wrote revision ${current.revision} at ${current.updatedAt}. Read room_context again, merge your change into the current note, and retry with basedOn ${current.revision}.`
-            : "The room note was cleared since you read it. Read room_context again and retry with basedOn null.",
+            : "This room has no note yet. Read room_context again and retry with basedOn null.",
         });
       }
       const trimmed = body.trim();
@@ -322,10 +322,6 @@ export const make = Effect.gen(function* () {
         return yield* new RoomsError({
           message: `A room note holds at most ${ROOM_NOTE_MAX_LENGTH} characters (this one has ${trimmed.length}). Keep where things stand and what is next; put history in a shelf document.`,
         });
-      }
-      if (trimmed === "") {
-        yield* sql`DELETE FROM hq_room_notes WHERE room_slug = ${slug}`;
-        return;
       }
       const updatedAt = yield* nowIso;
       yield* sql`
@@ -364,6 +360,11 @@ export const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* find(input.slug);
         if (input.note !== undefined) {
+          if (input.noteBasedOn === undefined) {
+            return yield* new RoomsError({
+              message: "A note update needs noteBasedOn: the revision it was based on, or null.",
+            });
+          }
           yield* sql.withTransaction(writeNote(input.slug, input.note, null, input.noteBasedOn));
         }
         const archivedAt = yield* nowIso;

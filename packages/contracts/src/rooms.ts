@@ -16,7 +16,11 @@ export type RoomSection = typeof RoomSection.Type;
 /** Longest room note, in characters: a board of where things stand, not a log. */
 export const ROOM_NOTE_MAX_LENGTH = 2000;
 
-/** A room's shared board: where the work stands, open threads of work, next steps. Replaced whole. */
+/**
+ * A room's shared board: where the work stands, open threads of work, next steps. Replaced whole.
+ * A room has none until it is first written; clearing leaves an empty body so the revision keeps
+ * counting.
+ */
 export const RoomNote = Schema.Struct({
   body: Schema.String,
   /** The thread that last wrote it; null when written from a client. */
@@ -55,7 +59,7 @@ export const RoomUpdateInput = Schema.Struct({
   title: Schema.optional(TrimmedNonEmptyString),
   outcome: Schema.optional(Schema.String),
   archived: Schema.optional(Schema.Boolean),
-  /** Replaces the room note; an empty string clears it. */
+  /** Replaces the room note; an empty string clears it. Requires noteBasedOn. */
   note: Schema.optional(Schema.String),
   /** The note revision the editor read, null for no note; a stale write is refused. */
   noteBasedOn: Schema.optional(Schema.NullOr(Schema.Int)),

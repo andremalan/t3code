@@ -127,9 +127,7 @@ const RoomNoteTool = Tool.make("room_note", {
   success: Schema.Struct({
     room: Schema.String,
     length: Schema.Int,
-    revision: Schema.NullOr(Schema.Int).annotate({
-      description: "Pass as basedOn on your next update; null after clearing.",
-    }),
+    revision: Schema.Int.annotate({ description: "Pass as basedOn on your next update." }),
   }),
   failure: RoomsError,
   dependencies,

@@ -200,7 +200,7 @@ const make = Effect.gen(function* () {
         return {
           room: updated.slug,
           length: updated.note?.body.length ?? 0,
-          revision: updated.note?.revision ?? null,
+          revision: updated.note?.revision ?? 0,
         };
       }),
 
