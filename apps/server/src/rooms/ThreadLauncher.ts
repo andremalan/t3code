@@ -322,7 +322,7 @@ export const make = Effect.gen(function* () {
         detail?.messages.findLast((message) => message.role === "assistant")?.text.trim() ?? "";
       const held = yield* openRoomsOf(old.id);
       const notes = held.flatMap((room) =>
-        room.note ? [`Room "${room.title}" note:\n${room.note.body}`] : [],
+        room.note?.body ? [`Room "${room.title}" note:\n${room.note.body}`] : [],
       );
       const text = [
         `[Handoff via Replace. You are taking over from thread "${old.title}" (${old.id}), which is now settled. The user started this replacement.]`,

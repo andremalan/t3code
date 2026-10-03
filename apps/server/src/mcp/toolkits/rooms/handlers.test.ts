@@ -276,8 +276,16 @@ describe("rooms toolkit handlers", () => {
         expect(staleEdit.message).toContain("changed since you read it");
         expect((yield* rooms.list)[0]!.note?.body).toBe("Edited by a user");
 
-        yield* call("room_note", { note: "", basedOn: edited.revision });
-        expect((yield* rooms.list)[0]!.note).toBeNull();
+        // Clearing keeps counting, so a writer holding an old revision cannot slip in after it.
+        const cleared = yield* call("room_note", { note: "", basedOn: edited.revision });
+        expect(cleared.revision).toBe(3);
+        expect((yield* rooms.list)[0]!.note).toMatchObject({ body: "", revision: 3 });
+        const afterClear = yield* call("room_note", { note: "Late", basedOn: 1 }).pipe(Effect.flip);
+        expect(afterClear.message).toContain("retry with basedOn 3");
+        const unversioned = yield* rooms
+          .update({ slug: "dex", note: "No version" })
+          .pipe(Effect.flip);
+        expect(unversioned.message).toContain("needs noteBasedOn");
 
         expect(yield* call("room_move", { room: "other" })).toEqual({
           threadId: ME,

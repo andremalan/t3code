@@ -46,7 +46,7 @@ function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: stri
     <section className="mb-6" data-testid="hq-room-note">
       <div className="mb-2 flex items-center gap-2">
         <h2 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Note</h2>
-        {props.note && draft === null ? (
+        {props.note?.body && draft === null ? (
           <span className="text-xs text-muted-foreground">
             {formatRelativeTimeLabel(props.note.updatedAt)}
             {props.writer ? ` · ${props.writer}` : ""}
@@ -59,7 +59,7 @@ function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: stri
         ) : null}
       </div>
       {draft === null ? (
-        props.note ? (
+        props.note?.body ? (
           <p className="text-sm whitespace-pre-wrap">{props.note.body}</p>
         ) : (
           <p className="text-xs text-muted-foreground">
