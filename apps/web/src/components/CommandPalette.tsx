@@ -117,6 +117,7 @@ import {
   hqRoomThreads,
   shelfGroup,
   useHqRooms,
+  usePrimaryThreadShells,
   useOpenHqRoom,
   useOpenShelfDoc,
   useRoomShelf,
@@ -799,6 +800,7 @@ function OpenCommandPaletteDialog(props: {
   }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  const roomThreads = usePrimaryThreadShells();
   const { rooms: hqRooms, selectedSlug: hqSelectedSlug } = useHqRooms();
   const openHqRoom = useOpenHqRoom();
   const openShelfDoc = useOpenShelfDoc();
@@ -2348,12 +2350,12 @@ function OpenCommandPaletteDialog(props: {
       searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
       title: room?.label ?? "All threads",
       description: room
-        ? `${hqRoomThreads(room, threads).length} threads`
+        ? `${hqRoomThreads(room, roomThreads).length} threads`
         : "Clear the room filter",
       icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         if (room) await navigate({ to: "/rooms/$slug", params: { slug: room.slug } });
-        else openHqRoom(null, hqRoomThreads(null, threads)[0]);
+        else openHqRoom(null, hqRoomThreads(null, roomThreads)[0]);
       },
     };
   });
@@ -2372,7 +2374,7 @@ function OpenCommandPaletteDialog(props: {
         run: async () =>
           openShelfDoc(
             doc,
-            hqRoomThreads(hqSelectedRoom, threads).map((thread) => ({
+            hqRoomThreads(hqSelectedRoom, roomThreads).map((thread) => ({
               environmentId: thread.environmentId,
               threadId: thread.id,
             })),

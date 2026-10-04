@@ -9,9 +9,15 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { Button } from "../components/ui/button";
-import { hqRoomThreads, selectHqRoom, setHqRoomNote, updateHqRoom, useHqRooms } from "../hqRooms";
+import {
+  hqRoomThreads,
+  selectHqRoom,
+  setHqRoomNote,
+  updateHqRoom,
+  useHqRooms,
+  usePrimaryThreadShells,
+} from "../hqRooms";
 import { HqShelfList } from "../hqShelf";
-import { useThreadShells } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 
 const NOTE_MAX = 2000;
@@ -193,7 +199,7 @@ function RoomRouteView() {
   const { slug } = Route.useParams();
   const navigate = useNavigate();
   const { rooms } = useHqRooms();
-  const threads = useThreadShells();
+  const threads = usePrimaryThreadShells();
   const room = rooms.find((candidate) => candidate.slug === slug) ?? null;
   const threadRefs = useMemo(
     () =>

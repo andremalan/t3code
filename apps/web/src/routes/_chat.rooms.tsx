@@ -35,10 +35,10 @@ import {
   threadActivityMs,
   unarchiveHqRoom,
   useHqRooms,
+  usePrimaryThreadShells,
   useOpenHqRoom,
 } from "../hqRooms";
 import { cn } from "../lib/utils";
-import { useThreadShells } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 
@@ -59,7 +59,7 @@ function RoomsRouteView() {
   const openRoom = useOpenHqRoom();
   const navigate = useNavigate();
   const { rooms, archivedRooms, selectedSlug } = useHqRooms();
-  const threads = useThreadShells();
+  const threads = usePrimaryThreadShells();
   const [status, setStatus] = useState("");
   const [over, setOver] = useState<{ name: string; kind: DragKind } | null>(null);
   const [showArchived, setShowArchived] = useState(false);

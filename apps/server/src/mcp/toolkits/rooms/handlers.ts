@@ -8,7 +8,7 @@ import * as Path from "effect/Path";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as Rooms from "../../../rooms/Rooms.ts";
-import * as McpInvocationContext from "../../McpInvocationContext.ts";
+import { readCaller, readMutationCaller } from "../../threadAccess.ts";
 import { type RoomContextResult, RoomsToolkit } from "./tools.ts";
 
 const RECENT_SHELF = 25;
@@ -22,7 +22,18 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
-  const caller = McpInvocationContext.McpInvocationContext;
+  // Upstream's caller checks: reads need the orchestration capability, writes an active run that
+  // this provider owns. A room_move target may be in another project: rooms span projects.
+  const asRoomsError = (failure: { readonly message: string }) =>
+    new RoomsError({ message: failure.message });
+  const reader = readCaller().pipe(
+    Effect.map(({ caller }) => ({ threadId: caller.id })),
+    Effect.mapError(asRoomsError),
+  );
+  const writer = readMutationCaller().pipe(
+    Effect.map(({ caller }) => ({ threadId: caller.id })),
+    Effect.mapError(asRoomsError),
+  );
 
   const threadShell = (threadId: ThreadId) =>
     threads.getThreadShell(threadId).pipe(Effect.mapError(failWith("Could not read threads.")));
@@ -90,7 +101,7 @@ const make = Effect.gen(function* () {
   return RoomsToolkit.of({
     room_context: ({ room: slug }) =>
       Effect.gen(function* () {
-        const { threadId } = yield* caller;
+        const { threadId } = yield* reader;
         const list = yield* openRooms;
         const chosen =
           slug === undefined
@@ -107,7 +118,7 @@ const make = Effect.gen(function* () {
 
     shelf_add: ({ ref, title, room: slug }) =>
       Effect.gen(function* () {
-        const { threadId } = yield* caller;
+        const { threadId } = yield* writer;
         const room = yield* resolveRoom(slug, threadId);
         let resolved = ref;
         if (!/^https?:\/\//i.test(ref)) {
@@ -135,7 +146,7 @@ const make = Effect.gen(function* () {
 
     room_note: ({ note, basedOn, room: slug }) =>
       Effect.gen(function* () {
-        const { threadId } = yield* caller;
+        const { threadId } = yield* writer;
         const room = yield* resolveRoom(slug, threadId);
         const updated = yield* rooms.setNote({ slug: room.slug, body: note, threadId, basedOn });
         return {
@@ -147,7 +158,8 @@ const make = Effect.gen(function* () {
 
     room_move: ({ room, threadId: target }) =>
       Effect.gen(function* () {
-        const threadId = target ?? (yield* caller).threadId;
+        const { threadId: callerId } = yield* writer;
+        const threadId = target ?? callerId;
         if (!(yield* threadShell(ThreadId.make(threadId)))) {
           return yield* new RoomsError({ message: `There is no thread ${threadId}.` });
         }

@@ -20,6 +20,7 @@ const FRESH = ThreadId.make("thread-fresh");
 const LAUNCHER = ThreadId.make("thread-launcher");
 const LAUNCHED = ThreadId.make("thread-launched");
 const SUBAGENT = ThreadId.make("thread-subagent");
+const EXISTING = ThreadId.make("thread-existing");
 
 const shell = (id: ThreadId, extra: Record<string, unknown> = {}) => ({
   id,
@@ -37,6 +38,7 @@ const threads = new Map<string, ReturnType<typeof shell>>([
   [FRESH, shell(FRESH, { latestRunId: null })],
   [LAUNCHER, shell(LAUNCHER)],
   [LAUNCHED, shell(LAUNCHED, { createdBy: "agent" })],
+  [EXISTING, shell(EXISTING, { createdBy: "agent" })],
   [
     SUBAGENT,
     shell(SUBAGENT, {
@@ -124,18 +126,24 @@ describe("RoomThreads", () => {
         yield* rooms.create({ slug: "dex", title: "Dex", outcome: "", section: "today" });
         yield* rooms.setThread({ slug: "dex", threadId: LAUNCHER, member: true });
 
+        const created = (threadId: ThreadId) => ({
+          type: "thread.created",
+          threadId,
+          payload: { createdBy: "agent" },
+        });
+        const message = (threadId: ThreadId) => ({
+          type: "message.updated",
+          threadId,
+          payload: { senderThreadId: LAUNCHER },
+        });
+        // A later message to an existing agent-made thread is not a launch.
+        yield* Queue.offer(events, message(EXISTING));
         // A subagent's first message names its parent too; it stays out of the room.
-        yield* Queue.offer(events, {
-          type: "message.updated",
-          threadId: SUBAGENT,
-          payload: { senderThreadId: LAUNCHER },
-        });
+        yield* Queue.offer(events, created(SUBAGENT));
+        yield* Queue.offer(events, message(SUBAGENT));
         // t3_thread_launch: the launched thread's first message names the launcher.
-        yield* Queue.offer(events, {
-          type: "message.updated",
-          threadId: LAUNCHED,
-          payload: { senderThreadId: LAUNCHER },
-        });
+        yield* Queue.offer(events, created(LAUNCHED));
+        yield* Queue.offer(events, message(LAUNCHED));
         const seated = () =>
           rooms.list.pipe(Effect.map((list) => list[0]!.threadIds.includes(LAUNCHED)));
         while (!(yield* seated())) yield* Effect.yieldNow;

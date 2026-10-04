@@ -38,13 +38,29 @@ export class RoomThreads extends Context.Service<
 
 const fail = (message: string) => (cause: unknown) => new RoomsError({ message, cause });
 
-/** The launching thread and the launched one, for the ways agents start threads. */
+/**
+ * The launching thread and the launched one, for the ways agents start threads. `fresh` holds
+ * threads an agent just created and that have not had a message yet, so a later message to an
+ * existing thread is never read as a launch.
+ */
 const launchOf = (
   event: OrchestrationV2DomainEvent,
+  fresh: Set<ThreadId>,
 ): { readonly from: ThreadId; readonly to: ThreadId } | null => {
+  if (event.type === "thread.created") {
+    if (event.payload.createdBy === "agent") {
+      // ponytail: bounded; a launch whose first message never comes is dropped.
+      if (fresh.size >= 200) fresh.delete(fresh.values().next().value!);
+      fresh.add(event.threadId);
+    }
+    return null;
+  }
   // t3_thread_launch and create_threads with a prompt: the first message names its sender.
-  if (event.type === "message.updated" && event.payload.senderThreadId) {
-    return { from: event.payload.senderThreadId, to: event.threadId };
+  if (event.type === "message.updated" && fresh.has(event.threadId)) {
+    fresh.delete(event.threadId);
+    return event.payload.senderThreadId
+      ? { from: event.payload.senderThreadId, to: event.threadId }
+      : null;
   }
   // create_threads records the new thread on the caller's timeline.
   if (event.type === "turn-item.updated" && event.payload.type === "thread_created") {
@@ -126,7 +142,14 @@ export const make = Effect.gen(function* () {
           createdBy: "user",
           creationSource: "server",
         })
-        .pipe(Effect.mapError(fail("The fork exists but its handoff did not start.")));
+        .pipe(
+          // The fork already exists and sits in the rooms: name it, so a retry does not fork again.
+          Effect.mapError(
+            fail(
+              `The replacement thread ${fork} was created but its handoff message did not start. Open it and continue there instead of replacing again.`,
+            ),
+          ),
+        );
       yield* threads
         .dispatch({
           type: "thread.settle",
@@ -161,9 +184,10 @@ export const make = Effect.gen(function* () {
       );
     });
 
+  const fresh = new Set<ThreadId>();
   yield* forkParked(
     Stream.runForEach(threads.streamDomainEvents, (event) => {
-      const launch = launchOf(event);
+      const launch = launchOf(event, fresh);
       return launch
         ? seatLaunched(launch).pipe(
             Effect.tapCause((cause) =>

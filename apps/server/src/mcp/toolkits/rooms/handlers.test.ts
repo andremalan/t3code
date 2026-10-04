@@ -32,6 +32,9 @@ const shell = (id: ThreadId, title: string) => ({
   id,
   projectId: "project-1",
   title,
+  // The caller holds an active run, as upstream's mutation check requires.
+  providerInstanceId: "codex",
+  activeRunId: "run-1",
   worktreePath: worktree,
   status: "idle",
   settledOverride: null,
