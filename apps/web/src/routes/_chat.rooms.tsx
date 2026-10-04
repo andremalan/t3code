@@ -35,10 +35,10 @@ import {
   threadActivityMs,
   unarchiveHqRoom,
   useHqRooms,
+  usePrimaryThreadShells,
   useOpenHqRoom,
 } from "../hqRooms";
 import { cn } from "../lib/utils";
-import { useThreadShells } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import type { SidebarThreadSummary } from "../types";
 
@@ -59,7 +59,7 @@ function RoomsRouteView() {
   const openRoom = useOpenHqRoom();
   const navigate = useNavigate();
   const { rooms, archivedRooms, selectedSlug } = useHqRooms();
-  const threads = useThreadShells();
+  const threads = usePrimaryThreadShells();
   const [status, setStatus] = useState("");
   const [over, setOver] = useState<{ name: string; kind: DragKind } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
@@ -164,7 +164,7 @@ function RoomsRouteView() {
           <span className="hidden text-xs text-muted-foreground md:inline">
             Open a room for its threads and shelf; it also filters the sidebar. Drag rooms to
             reorder them, and drag a thread onto a room to add it. Hover a room&apos;s thread to
-            replace or remove it. Esc to go back.
+            replace or settle it. Esc to go back.
           </span>
           {status ? (
             <span role="status" className="ml-auto text-xs text-muted-foreground">

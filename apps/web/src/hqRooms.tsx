@@ -28,7 +28,7 @@ import {
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -59,6 +59,7 @@ import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings"
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useUiStateStore } from "~/uiStateStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { useThreadShells } from "~/state/entities";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { roomsEnvironment } from "~/state/rooms";
 import { useEnvironmentQuery } from "~/state/query";
@@ -229,6 +230,21 @@ export async function setHqRoomNote(slug: string, note: string, basedOn: number 
   await runRooms(roomsEnvironment.update, { slug, note, noteBasedOn: basedOn });
 }
 
+/**
+ * Renames a room or edits its outcome; the slug stays, so links and memberships hold. Pass only
+ * the fields that changed, so a concurrent edit to the other one survives.
+ */
+export async function updateHqRoom(
+  slug: string,
+  details: { readonly title?: string; readonly outcome?: string },
+) {
+  await runRooms(roomsEnvironment.update, {
+    slug,
+    ...(details.title !== undefined ? { title: details.title.trim() } : {}),
+    ...(details.outcome !== undefined ? { outcome: details.outcome.trim() } : {}),
+  });
+}
+
 export async function archiveHqRoom(slug: string) {
   await runRooms(roomsEnvironment.update, { slug, archived: true });
   if (selected === slug) selectHqRoom(null);
@@ -333,6 +349,16 @@ export function hqRoomThreads(
         (includeSettled || thread.settledOverride !== "settled") &&
         (room === null || room.threadIds.has(thread.id)),
     ),
+  );
+}
+
+/** Rooms live on the primary server, so only its threads can be members. */
+export function usePrimaryThreadShells() {
+  const threads = useThreadShells();
+  const primary = useAtomValue(primaryEnvironmentIdAtom);
+  return useMemo(
+    () => threads.filter((thread) => thread.environmentId === primary),
+    [primary, threads],
   );
 }
 
@@ -622,8 +648,9 @@ function HqReplaceDialog({
           <DialogHeader>
             <DialogTitle>Replace agent</DialogTitle>
             <DialogDescription>
-              Starts a fresh agent in the same worktree and rooms, handed the room note and{" "}
-              {thread.title}&apos;s last reply. The old thread is settled.
+              Forks {thread.title} into a fresh agent in the same worktree and rooms. The
+              conversation carries over, the agent gets the room note, and the old thread is
+              settled.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-2 text-sm">

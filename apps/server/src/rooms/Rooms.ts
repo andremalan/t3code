@@ -11,6 +11,7 @@ import {
   type RoomShelfDoc,
   RoomsError,
   type RoomUpdateInput,
+  ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +24,10 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
+import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
+
+import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
 
 /**
  * HQ fork: rooms group threads. The tables are created here rather than by the numbered
@@ -250,6 +255,8 @@ const listRooms = Effect.gen(function* () {
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const fs = yield* FileSystem.FileSystem;
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const projects = yield* ProjectService.ProjectService;
   yield* ensureSchema;
   const changes = yield* PubSub.unbounded<RoomList>();
 
@@ -461,31 +468,38 @@ export const make = Effect.gen(function* () {
           SELECT ref, title, kind, thread_id AS "threadId", added_at AS "addedAt"
           FROM hq_room_documents WHERE room_slug = ${slug}
         `;
-        const members = yield* sql<{ threadId: string; root: string | null }>`
-          SELECT t.thread_id AS "threadId", COALESCE(t.worktree_path, p.workspace_root) AS "root"
-          FROM hq_room_threads m
-          JOIN projection_threads t ON t.thread_id = m.thread_id AND t.deleted_at IS NULL
-          LEFT JOIN projection_projects p ON p.project_id = t.project_id
-          WHERE m.room_slug = ${slug}
-        `;
-        const prs = yield* sql<{
-          threadId: string;
-          repository: string;
-          number: number;
-          url: string;
-          linkedAt: string;
-          title: string | null;
-          state: string | null;
-          isDraft: number | null;
-        }>`
-          SELECT pr.thread_id AS "threadId", pr.repository, pr.number, pr.url,
-            pr.linked_at AS "linkedAt",
-            json_extract(pr.snapshot_json, '$.title') AS "title",
-            json_extract(pr.snapshot_json, '$.state') AS "state",
-            json_extract(pr.snapshot_json, '$.isDraft') AS "isDraft"
-          FROM projection_thread_pull_requests pr
-          JOIN hq_room_threads m ON m.thread_id = pr.thread_id AND m.room_slug = ${slug}
-        `;
+        // Member threads come from the orchestrator; PR links live on each thread.
+        const room = yield* find(slug);
+        const shells = (yield* Effect.forEach(
+          room.threadIds,
+          (threadId) =>
+            threads.getThreadShell(ThreadId.make(threadId)).pipe(Effect.orElseSucceed(() => null)),
+          { concurrency: 8 },
+        )).filter((shell) => shell !== null);
+        const projectRoots = new Map(
+          (yield* projects
+            .listShells({ projectIds: [...new Set(shells.map((shell) => shell.projectId))] })
+            .pipe(Effect.orElseSucceed(() => []))).map((project) => [
+            project.id,
+            project.workspaceRoot,
+          ]),
+        );
+        const members = shells.map((shell) => ({
+          threadId: shell.id,
+          root: shell.worktreePath ?? projectRoots.get(shell.projectId) ?? null,
+        }));
+        const prs = shells.flatMap((shell) =>
+          visibleThreadPullRequests(shell.pullRequests ?? []).map((link) => ({
+            threadId: shell.id,
+            repository: link.repository,
+            number: link.number,
+            url: link.url,
+            linkedAt: link.linkedAt,
+            title: link.snapshot?.title ?? null,
+            state: link.snapshot?.state ?? null,
+            isDraft: link.snapshot?.isDraft ?? false,
+          })),
+        );
 
         const docs = new Map<string, ShelfRow>();
         for (const row of recorded) {
