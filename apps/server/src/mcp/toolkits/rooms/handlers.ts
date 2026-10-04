@@ -32,6 +32,10 @@ export function startedByText(
   return `[Started by thread "${sender.title}" (${sender.id}) via start_thread. A peer agent, not the user. Report back with send_to_thread when it asks for an answer.]\n\n${prompt}`;
 }
 
+/** Appended to a start_thread prompt with settleWhenDone. */
+const SETTLE_WHEN_DONE =
+  "\n\nWhen your work here is finished and you have reported back, call thread_settle with no threadId to settle this thread. A later message reopens it.";
+
 /** The framing a peer message arrives with, so the receiving agent does not take it for the user. */
 export function peerMessageText(
   sender: Pick<OrchestrationThreadShell, "id" | "title">,
@@ -214,6 +218,7 @@ const make = Effect.gen(function* () {
       project,
       provider,
       model,
+      settleWhenDone,
     }) =>
       Effect.gen(function* () {
         const { threadId } = yield* caller;
@@ -221,7 +226,7 @@ const make = Effect.gen(function* () {
         if (!sender) return yield* new RoomsError({ message: "This thread is not known to T3." });
         return yield* launcher.start({
           from: sender.id,
-          text: startedByText(sender, prompt),
+          text: startedByText(sender, settleWhenDone ? `${prompt}${SETTLE_WHEN_DONE}` : prompt),
           title,
           worktree: worktree ?? "same",
           baseBranch,
@@ -231,6 +236,21 @@ const make = Effect.gen(function* () {
           provider,
           model,
         });
+      }),
+
+    thread_read: ({ threadId, after, limit, waitSeconds }) =>
+      launcher.read({
+        threadId: ThreadId.make(threadId),
+        after,
+        limit: limit ?? 5,
+        waitMs: (waitSeconds ?? 0) * 1000,
+      }),
+
+    thread_settle: ({ threadId: target, archive }) =>
+      Effect.gen(function* () {
+        const threadId = target ? ThreadId.make(target) : (yield* caller).threadId;
+        const result = yield* launcher.settle({ threadId, archive: archive ?? false });
+        return { ...result, state: archive ? ("archived" as const) : ("settled" as const) };
       }),
 
     room_move: ({ room, threadId: target }) =>

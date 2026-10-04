@@ -161,6 +161,10 @@ const StartThreadTool = Tool.make("start_thread", {
     provider: Schema.optional(TrimmedNonEmptyString).annotate({
       description: "Provider such as codex or claudeAgent. Defaults to this thread's.",
     }),
+    settleWhenDone: Schema.optional(Schema.Boolean).annotate({
+      description:
+        "Ask the new thread to settle itself with thread_settle once it has reported back, as reviews should. A later message reopens it.",
+    }),
     model: Schema.optional(TrimmedNonEmptyString).annotate({
       description:
         "Model slug or name. With only provider: this thread's model if it is the same provider, else that provider's flagship.",
@@ -184,6 +188,71 @@ const StartThreadTool = Tool.make("start_thread", {
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, false)
+  .annotate(Tool.OpenWorld, false);
+
+const ThreadMessageEntry = Schema.Struct({
+  id: Schema.String.annotate({ description: "Pass as after to read only newer messages." }),
+  role: Schema.String,
+  text: Schema.String,
+  createdAt: Schema.String,
+  streaming: Schema.Boolean,
+});
+
+const ThreadReadTool = Tool.make("thread_read", {
+  description:
+    "Read another thread's latest messages, such as a reviewer's findings or a peer's reply. Pass after (a message id) to get only newer messages, and waitSeconds to wait for the thread to finish its current turn first. working: true means it is still going when the wait ended; call again to keep waiting.",
+  parameters: Schema.Struct({
+    threadId: TrimmedNonEmptyString,
+    after: Schema.optional(TrimmedNonEmptyString),
+    limit: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 50 })),
+    ).annotate({
+      description: "Most recent messages to return. Defaults to 5.",
+    }),
+    waitSeconds: Schema.optional(
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 55 })),
+    ).annotate({ description: "Wait up to this long for the thread to go idle. Defaults to 0." }),
+  }),
+  success: Schema.Struct({
+    threadId: Schema.String,
+    title: Schema.String,
+    working: Schema.Boolean,
+    settled: Schema.Boolean,
+    archived: Schema.Boolean,
+    messages: Schema.Array(ThreadMessageEntry),
+  }),
+  failure: RoomsError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Read thread")
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const ThreadSettleTool = Tool.make("thread_settle", {
+  description:
+    "Settle a thread whose work is done, or archive one that is no longer wanted. Defaults to this thread. A thread mid-turn (this one always is) settles when the turn ends. Settled threads drop out of the active list; a later message reopens them. Settle a review thread once its back and forth is over.",
+  parameters: Schema.Struct({
+    threadId: Schema.optional(TrimmedNonEmptyString).annotate({
+      description: "Defaults to this thread.",
+    }),
+    archive: Schema.optional(Schema.Boolean).annotate({
+      description: "Archive instead of settle. Defaults to false.",
+    }),
+  }),
+  success: Schema.Struct({
+    threadId: Schema.String,
+    state: Schema.Literals(["settled", "archived"]),
+    when: Schema.Literals(["now", "after-turn"]),
+  }),
+  failure: RoomsError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Settle thread")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
 const RoomMoveTool = Tool.make("room_move", {
@@ -213,4 +282,6 @@ export const RoomsToolkit = Toolkit.make(
   RoomNoteTool,
   RoomMoveTool,
   StartThreadTool,
+  ThreadReadTool,
+  ThreadSettleTool,
 );

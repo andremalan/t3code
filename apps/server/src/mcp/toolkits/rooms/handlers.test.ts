@@ -15,6 +15,8 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -96,9 +98,27 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
             Effect.succeed(
               Option.some({
                 messages: [
-                  { role: "assistant", text: "Old news." },
-                  { role: "user", text: "Keep going." },
-                  { role: "assistant", text: "Shipped slice 2; slice 3 is next." },
+                  {
+                    id: "m1",
+                    role: "assistant",
+                    text: "Old news.",
+                    createdAt: "t1",
+                    streaming: false,
+                  },
+                  {
+                    id: "m2",
+                    role: "user",
+                    text: "Keep going.",
+                    createdAt: "t2",
+                    streaming: false,
+                  },
+                  {
+                    id: "m3",
+                    role: "assistant",
+                    text: "Shipped slice 2; slice 3 is next.",
+                    createdAt: "t3",
+                    streaming: false,
+                  },
                 ],
               } as never),
             ),
@@ -467,5 +487,70 @@ describe("rooms toolkit handlers", () => {
           expect(yield* Ref.get(commands)).toEqual([]);
         }),
       ),
+  );
+
+  it.effect("reads threads, waits for them to go idle, and settles them when their turn ends", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { call, commands } = yield* makeHarness();
+        const busy = threads.get(BUSY)!;
+
+        const newer = yield* call("thread_read", { threadId: PEER, after: "m1", limit: 1 });
+        expect(newer).toMatchObject({ title: "Peer", working: false });
+        expect(newer.messages.map((message) => message.id)).toEqual(["m3"]);
+
+        // Waiting returns once the thread stops working; the 5s recheck notices without an event.
+        const reading = yield* call("thread_read", { threadId: BUSY, waitSeconds: 30 }).pipe(
+          Effect.forkChild,
+        );
+        threads.set(BUSY, { ...busy, session: { status: "ready" } as never });
+        yield* TestClock.adjust("5 seconds");
+        expect((yield* Fiber.join(reading)).working).toBe(false);
+        threads.set(BUSY, busy);
+        const stillBusy = yield* call("thread_read", { threadId: BUSY, waitSeconds: 10 }).pipe(
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust("10 seconds");
+        expect((yield* Fiber.join(stillBusy)).working).toBe(true);
+
+        expect(yield* call("thread_settle", { threadId: PEER })).toMatchObject({
+          state: "settled",
+          when: "now",
+        });
+        expect(yield* call("thread_settle", { threadId: PEER, archive: true })).toMatchObject({
+          state: "archived",
+          when: "now",
+        });
+        expect((yield* Ref.get(commands)).map((command) => command.type)).toEqual([
+          "thread.settle",
+          "thread.archive",
+        ]);
+
+        // A working thread (as a thread settling itself always is) settles when its turn ends.
+        yield* Ref.set(commands, []);
+        expect(yield* call("thread_settle", { threadId: BUSY })).toMatchObject({
+          when: "after-turn",
+        });
+        expect(yield* Ref.get(commands)).toEqual([]);
+        threads.set(BUSY, { ...busy, session: { status: "ready" } as never });
+        yield* TestClock.adjust("5 seconds");
+        while ((yield* Ref.get(commands)).length === 0) yield* Effect.yieldNow;
+        expect(yield* Ref.get(commands)).toMatchObject([{ type: "thread.settle", threadId: BUSY }]);
+        threads.set(BUSY, busy);
+
+        yield* Ref.set(commands, []);
+        yield* call("start_thread", {
+          prompt: "Review it.",
+          title: "Reviewer",
+          settleWhenDone: true,
+        });
+        const turn = (yield* Ref.get(commands)).find(
+          (command) => command.type === "thread.turn.start",
+        );
+        const text = turn?.type === "thread.turn.start" ? turn.message.text : "";
+        expect(text).toContain("Review it.");
+        expect(text).toMatch(/call thread_settle with no threadId/);
+      }),
+    ),
   );
 });

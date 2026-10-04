@@ -13,10 +13,12 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
 import { GitWorkflowService } from "../git/GitWorkflowService.ts";
 import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
 import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { threadHasQueuedTurnStart } from "../orchestration/ThreadSettlementPolicy.ts";
 import { ProjectSetupScriptRunner } from "../project/ProjectSetupScriptRunner.ts";
 import { ProviderRegistry } from "../provider/Services/ProviderRegistry.ts";
 import { Rooms } from "./Rooms.ts";
@@ -56,6 +58,27 @@ export interface StartedThread {
   readonly firstTurn: "started" | "after-setup";
 }
 
+export interface ThreadMessage {
+  readonly id: string;
+  readonly role: string;
+  readonly text: string;
+  readonly createdAt: string;
+  readonly streaming: boolean;
+}
+
+export interface ThreadReading {
+  readonly threadId: ThreadId;
+  readonly title: string;
+  /** Still running, starting, or holding a queued message when the read (or its wait) ended. */
+  readonly working: boolean;
+  readonly settled: boolean;
+  readonly archived: boolean;
+  readonly messages: ReadonlyArray<ThreadMessage>;
+}
+
+/** Longest wait for a deferred settle: past a stuck turn, the thread is left alone. */
+const DEFERRED_SETTLE_MAX_MS = 30 * 60_000;
+
 /**
  * HQ fork: starts threads on the server's own initiative, for agents (start_thread) and for
  * Replace. A lean cousin of the client bootstrap in ws.ts, which is per-connection transport code:
@@ -73,6 +96,27 @@ export class ThreadLauncher extends Context.Service<
       readonly threadId: ThreadId;
       readonly modelSelection?: ModelSelection | undefined;
     }) => Effect.Effect<StartedThread, RoomsError>;
+    /**
+     * A thread's latest messages, only those after `after` when given. With `waitMs`, first waits
+     * up to that long for the thread to stop working.
+     */
+    readonly read: (input: {
+      readonly threadId: ThreadId;
+      readonly after?: string | undefined;
+      readonly limit: number;
+      readonly waitMs: number;
+    }) => Effect.Effect<ThreadReading, RoomsError>;
+    /**
+     * Settles or archives a thread. A thread that is working (always the case for a thread
+     * settling itself, mid-turn) is settled when its turn ends; a later message reopens it.
+     */
+    readonly settle: (input: {
+      readonly threadId: ThreadId;
+      readonly archive: boolean;
+    }) => Effect.Effect<
+      { readonly threadId: ThreadId; readonly when: "now" | "after-turn" },
+      RoomsError
+    >;
   }
 >()("t3/rooms/ThreadLauncher") {}
 
@@ -358,7 +402,111 @@ export const make = Effect.gen(function* () {
       return started;
     });
 
-  return ThreadLauncher.of({ start, replace });
+  const isWorking = (shell: OrchestrationThreadShell, now: string) =>
+    shell.session?.status === "starting" ||
+    shell.session?.status === "running" ||
+    threadHasQueuedTurnStart(shell, now);
+
+  /** True once the thread stops working, false if `ms` passes first. */
+  const waitUntilIdle = (threadId: ThreadId, ms: number) => {
+    const idle = Effect.gen(function* () {
+      return !isWorking(yield* shellOf(threadId), yield* nowIso);
+    });
+    // Events make the common case immediate; the tick covers an event missed while subscribing
+    // and a queued message whose grace period runs out with no event.
+    return Stream.mergeAll(
+      [
+        Stream.make(undefined),
+        engine.streamDomainEvents.pipe(
+          Stream.filter((event) => event.aggregateId === threadId),
+          Stream.map((): void => undefined),
+        ),
+        Stream.tick("5 seconds"),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(
+      Stream.mapEffect(() => idle),
+      Stream.filter((done) => done),
+      Stream.runHead,
+      Effect.timeoutOption(ms),
+      Effect.map(Option.isSome),
+    );
+  };
+
+  const read = (input: {
+    readonly threadId: ThreadId;
+    readonly after?: string | undefined;
+    readonly limit: number;
+    readonly waitMs: number;
+  }) =>
+    Effect.gen(function* () {
+      if (input.waitMs > 0) yield* waitUntilIdle(input.threadId, input.waitMs);
+      const shell = yield* shellOf(input.threadId);
+      const detail = yield* snapshots
+        .getThreadDetailById(input.threadId, { activityKinds: [] })
+        .pipe(Effect.map(Option.getOrNull), Effect.mapError(fail("Could not read the thread.")));
+      const messages = detail?.messages ?? [];
+      const start = input.after
+        ? messages.findIndex((message) => message.id === input.after) + 1
+        : 0;
+      return {
+        threadId: shell.id,
+        title: shell.title,
+        working: isWorking(shell, yield* nowIso),
+        settled: shell.settledOverride === "settled",
+        archived: shell.archivedAt !== null,
+        messages: messages
+          .slice(start)
+          .slice(-input.limit)
+          .map((message) => ({
+            id: message.id,
+            role: message.role,
+            text: message.text,
+            createdAt: message.createdAt,
+            streaming: message.streaming,
+          })),
+      } satisfies ThreadReading;
+    });
+
+  const settle = (input: { readonly threadId: ThreadId; readonly archive: boolean }) =>
+    Effect.gen(function* () {
+      const shell = yield* shellOf(input.threadId);
+      const dispatch = Effect.gen(function* () {
+        yield* engine.dispatch(
+          input.archive
+            ? {
+                type: "thread.archive",
+                commandId: yield* commandId("thread-archive"),
+                threadId: shell.id,
+              }
+            : {
+                type: "thread.settle",
+                commandId: yield* commandId("thread-settle"),
+                threadId: shell.id,
+              },
+        );
+      });
+      if (!isWorking(shell, yield* nowIso)) {
+        yield* dispatch.pipe(
+          Effect.mapError(
+            fail(`Could not ${input.archive ? "archive" : "settle"} ${shell.title}.`),
+          ),
+        );
+        return { threadId: shell.id, when: "now" as const };
+      }
+      // ponytail: the deferred settle lives in this process; a server restart mid-turn drops it.
+      yield* waitUntilIdle(shell.id, DEFERRED_SETTLE_MAX_MS).pipe(
+        Effect.flatMap((idle) => (idle ? dispatch : Effect.void)),
+        Effect.tapCause((cause) =>
+          Effect.logWarning("deferred thread settle failed", { threadId: shell.id, cause }),
+        ),
+        Effect.ignore,
+        Effect.forkDetach,
+      );
+      return { threadId: shell.id, when: "after-turn" as const };
+    });
+
+  return ThreadLauncher.of({ start, replace, read, settle });
 });
 
 export const layer = Layer.effect(ThreadLauncher, make);
