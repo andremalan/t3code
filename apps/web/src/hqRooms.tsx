@@ -229,6 +229,15 @@ export async function setHqRoomNote(slug: string, note: string, basedOn: number 
   await runRooms(roomsEnvironment.update, { slug, note, noteBasedOn: basedOn });
 }
 
+/** Renames a room and edits its outcome; the slug stays, so links and memberships hold. */
+export async function updateHqRoom(slug: string, details: { title: string; outcome: string }) {
+  await runRooms(roomsEnvironment.update, {
+    slug,
+    title: details.title.trim(),
+    outcome: details.outcome.trim(),
+  });
+}
+
 export async function archiveHqRoom(slug: string) {
   await runRooms(roomsEnvironment.update, { slug, archived: true });
   if (selected === slug) selectHqRoom(null);

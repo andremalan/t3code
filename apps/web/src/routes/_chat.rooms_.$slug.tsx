@@ -9,12 +9,88 @@ import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { Button } from "../components/ui/button";
-import { hqRoomThreads, selectHqRoom, setHqRoomNote, useHqRooms } from "../hqRooms";
+import { hqRoomThreads, selectHqRoom, setHqRoomNote, updateHqRoom, useHqRooms } from "../hqRooms";
 import { HqShelfList } from "../hqShelf";
 import { useThreadShells } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 
 const NOTE_MAX = 2000;
+
+/** The room's outcome, and the way to rename the room or change its outcome. */
+function RoomDetails(props: { slug: string; title: string; outcome: string }) {
+  const [draft, setDraft] = useState<{ title: string; outcome: string } | null>(null);
+  const [error, setError] = useState("");
+  if (draft === null) {
+    return (
+      <div className="mb-6 flex items-start gap-2">
+        <p className="min-w-0 flex-1 text-sm">
+          {props.outcome || <span className="text-muted-foreground">No outcome yet.</span>}
+        </p>
+        <Button
+          size="xs"
+          variant="ghost"
+          onClick={() => {
+            setError("");
+            setDraft({ title: props.title, outcome: props.outcome });
+          }}
+        >
+          Edit room
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <form
+      className="mb-6 flex flex-col gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setError("");
+        updateHqRoom(props.slug, draft).then(
+          () => setDraft(null),
+          (failure: unknown) =>
+            setError(failure instanceof Error ? failure.message : String(failure)),
+        );
+      }}
+    >
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Name</span>
+        <input
+          value={draft.title}
+          required
+          maxLength={120}
+          autoFocus
+          onChange={(event) => setDraft({ ...draft, title: event.target.value })}
+          className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+        />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-xs text-muted-foreground">Outcome</span>
+        <textarea
+          value={draft.outcome}
+          maxLength={500}
+          rows={3}
+          onChange={(event) => setDraft({ ...draft, outcome: event.target.value })}
+          className="rounded-md border border-input bg-background px-2 py-1 text-sm"
+        />
+      </label>
+      <div className="flex items-center gap-2">
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          className="ml-auto"
+          onClick={() => setDraft(null)}
+        >
+          Cancel
+        </Button>
+        <Button type="submit" size="xs">
+          Save
+        </Button>
+      </div>
+    </form>
+  );
+}
 
 /** The room's shared board, written by its threads through room_note; editable here too. */
 function RoomNoteView(props: { slug: string; note: RoomNote | null; writer: string | null }) {
@@ -138,7 +214,7 @@ function RoomRouteView() {
               </p>
             ) : (
               <>
-                {room.outcome ? <p className="mb-6 text-sm">{room.outcome}</p> : null}
+                <RoomDetails key={slug} slug={slug} title={room.label} outcome={room.outcome} />
                 <RoomNoteView
                   key={slug}
                   slug={slug}
