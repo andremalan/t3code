@@ -28,7 +28,7 @@ import {
   RefreshCwIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -59,6 +59,7 @@ import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings"
 import { useRightPanelStore } from "~/rightPanelStore";
 import { useUiStateStore } from "~/uiStateStore";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
+import { useThreadShells } from "~/state/entities";
 import { primaryEnvironmentIdAtom } from "~/state/primaryEnvironment";
 import { roomsEnvironment } from "~/state/rooms";
 import { useEnvironmentQuery } from "~/state/query";
@@ -348,6 +349,16 @@ export function hqRoomThreads(
         (includeSettled || thread.settledOverride !== "settled") &&
         (room === null || room.threadIds.has(thread.id)),
     ),
+  );
+}
+
+/** Rooms live on the primary server, so only its threads can be members. */
+export function usePrimaryThreadShells() {
+  const threads = useThreadShells();
+  const primary = useAtomValue(primaryEnvironmentIdAtom);
+  return useMemo(
+    () => threads.filter((thread) => thread.environmentId === primary),
+    [primary, threads],
   );
 }
 
