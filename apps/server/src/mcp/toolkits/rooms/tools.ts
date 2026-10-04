@@ -10,17 +10,15 @@ import * as Tool from "effect/unstable/ai/Tool";
 import * as Toolkit from "effect/unstable/ai/Toolkit";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as OrchestrationEngine from "../../../orchestration/Services/OrchestrationEngine.ts";
-import * as ProjectionSnapshotQuery from "../../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
 import * as Rooms from "../../../rooms/Rooms.ts";
-import * as ThreadLauncher from "../../../rooms/ThreadLauncher.ts";
 
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
-  OrchestrationEngine.OrchestrationEngineService,
-  ProjectionSnapshotQuery.ProjectionSnapshotQuery,
+  ThreadManagementService.ThreadManagementService,
+  ProjectService.ProjectService,
   Rooms.Rooms,
-  ThreadLauncher.ThreadLauncher,
 ];
 
 const RoomInput = TrimmedNonEmptyString.annotate({
@@ -75,23 +73,6 @@ const RoomContextTool = Tool.make("room_context", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-const SendToThreadTool = Tool.make("send_to_thread", {
-  description:
-    "Send a message to another T3 thread. It arrives as a new turn in that thread, marked as coming from this thread, and starts its agent. Use it for new work or a correction that needs action, not routine status. Find thread ids with room_context.",
-  parameters: Schema.Struct({
-    threadId: TrimmedNonEmptyString.annotate({ description: "The thread to message." }),
-    message: TrimmedNonEmptyString,
-  }),
-  success: Schema.Struct({ threadId: Schema.String, title: Schema.String }),
-  failure: RoomsError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Send to thread")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
-
 const ShelfAddTool = Tool.make("shelf_add", {
   description:
     "Put a deliverable on the room's shelf: a URL, or a file path (absolute, or relative to this thread's worktree). Files under cc/<room>/ in a member worktree are shelved automatically; use this for anything else. Pull requests are not shelved: link them with link_pull_request and the room shows them. Adding the same ref again updates its title.",
@@ -138,54 +119,6 @@ const RoomNoteTool = Tool.make("room_note", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
-const StartThreadTool = Tool.make("start_thread", {
-  description:
-    "Start a new T3 thread to run work in parallel, with this thread's project, model and permission mode. It joins this thread's room unless you pass room, and its first message is your prompt, marked as coming from this thread. worktree \"same\" shares this checkout (reviews, QA, research); \"new\" cuts a fresh git worktree off baseBranch (default: this thread's branch) for independent code changes, and runs the project's setup script there. Give the prompt everything the new agent needs: it does not see this conversation.",
-  parameters: Schema.Struct({
-    prompt: TrimmedNonEmptyString,
-    title: TrimmedNonEmptyString.annotate({ description: "Short thread title." }),
-    worktree: Schema.optional(Schema.Literals(["same", "new"])).annotate({
-      description: "Defaults to same.",
-    }),
-    baseBranch: Schema.optional(TrimmedNonEmptyString),
-    branch: Schema.optional(TrimmedNonEmptyString).annotate({
-      description: "Branch for a new worktree; T3 names a temporary one when omitted.",
-    }),
-    room: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).annotate({
-      description: "Room slug, or null for none. Defaults to this thread's rooms.",
-    }),
-    project: Schema.optional(TrimmedNonEmptyString).annotate({
-      description:
-        "Another T3 project, by title, path or folder name. worktree same then means that project's root.",
-    }),
-    provider: Schema.optional(TrimmedNonEmptyString).annotate({
-      description: "Provider such as codex or claudeAgent. Defaults to this thread's.",
-    }),
-    model: Schema.optional(TrimmedNonEmptyString).annotate({
-      description:
-        "Model slug or name. With only provider: this thread's model if it is the same provider, else that provider's flagship.",
-    }),
-  }),
-  success: Schema.Struct({
-    threadId: Schema.String,
-    title: Schema.String,
-    worktreePath: Schema.NullOr(Schema.String),
-    branch: Schema.NullOr(Schema.String),
-    rooms: Schema.Array(Schema.String),
-    firstTurn: Schema.Literals(["started", "after-setup"]).annotate({
-      description:
-        "after-setup: the project's setup script runs first; the agent starts when it ends.",
-    }),
-  }),
-  failure: RoomsError,
-  dependencies,
-})
-  .annotate(Tool.Title, "Start thread")
-  .annotate(Tool.Readonly, false)
-  .annotate(Tool.Destructive, false)
-  .annotate(Tool.Idempotent, false)
-  .annotate(Tool.OpenWorld, false);
-
 const RoomMoveTool = Tool.make("room_move", {
   description:
     "Move a thread into a room, taking it out of any other open room; pass room null to take it out of every room. Defaults to this thread. Use it when work belongs to a different room, or to seat a thread you started. room_context lists rooms.",
@@ -206,11 +139,4 @@ const RoomMoveTool = Tool.make("room_move", {
   .annotate(Tool.OpenWorld, false);
 
 /** HQ fork: rooms for agents. Every thread gets it; the tools say so when a thread has no room. */
-export const RoomsToolkit = Toolkit.make(
-  RoomContextTool,
-  SendToThreadTool,
-  ShelfAddTool,
-  RoomNoteTool,
-  RoomMoveTool,
-  StartThreadTool,
-);
+export const RoomsToolkit = Toolkit.make(RoomContextTool, ShelfAddTool, RoomNoteTool, RoomMoveTool);
