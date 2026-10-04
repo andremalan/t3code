@@ -134,7 +134,7 @@ function RoomRouteView() {
           <div className="mx-auto w-full max-w-3xl p-4 sm:p-6">
             {room === null ? (
               <p className="text-sm text-muted-foreground">
-                {rooms.length === 0 ? "Loading rooms…" : "HQ has no room with this name."}
+                {rooms.length === 0 ? "Loading rooms…" : "There is no room with this name."}
               </p>
             ) : (
               <>

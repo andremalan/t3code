@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/web",
-  "version": "0.0.44",
+  "version": "0.0.45",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,8 +9,7 @@
     "build": "vp build",
     "preview": "vp preview",
     "typecheck": "tsc --noEmit",
-    "test": "vp test run --passWithNoTests --project unit",
-    "hq": "sh scripts/hq-serve.sh"
+    "test": "vp test run --passWithNoTests --project unit"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
