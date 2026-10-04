@@ -61,25 +61,26 @@ export const readMutationCaller = Effect.fn("mcp.readMutationCaller")(function* 
   return context;
 });
 
-/** Resolve the credential's project before looking up a caller-supplied thread. */
+const threadNotFound = () =>
+  new OrchestratorMcpFailure({ code: "thread_not_found", message: "The thread was not found." });
+
+/** Look up a caller-supplied thread in its own project: rooms, and agents' reach, span projects. */
 export const readThread = Effect.fn("mcp.readThread")(function* <
   K extends ProjectionRecordField = never,
 >(threadId?: ThreadId, fields: ReadonlyArray<K> = []) {
   const { scope, threads, caller } = yield* readCaller();
+  const target =
+    threadId === undefined || threadId === caller.id
+      ? caller
+      : yield* threads.getThreadShell(threadId).pipe(Effect.mapError(unavailable));
+  if (target === null) return yield* threadNotFound();
   const projection = yield* threads
-    .getProjectThreadRecords(
-      { projectId: caller.projectId, threadId: threadId ?? caller.id },
-      fields,
-      { turnItemTypes: ["user_input_request"] },
-    )
+    .getProjectThreadRecords({ projectId: target.projectId, threadId: target.id }, fields, {
+      turnItemTypes: ["user_input_request"],
+    })
     .pipe(
       Effect.mapError((error) =>
-        error._tag === "ThreadManagementThreadNotFoundError"
-          ? new OrchestratorMcpFailure({
-              code: "thread_not_found",
-              message: "The thread was not found in the calling project.",
-            })
-          : unavailable(),
+        error._tag === "ThreadManagementThreadNotFoundError" ? threadNotFound() : unavailable(),
       ),
     );
   return { scope, threads, caller, projection };

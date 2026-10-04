@@ -2326,31 +2326,34 @@ describe("orchestrator MCP toolkit", () => {
               branch: null,
               worktreePath: cwd,
             });
-            const foreignOrganizeCall = yield* invoke("t3_thread_organize", {
-              threadId: foreignThreadId,
-              action: "pin",
-            });
-            expect(foreignOrganizeCall.structuredContent).toMatchObject({
-              code: "thread_not_found",
-            });
-            expect((yield* orchestrator.getThreadShell(foreignThreadId))?.pinnedAt).toBeNull();
+            // Rooms span projects, so thread tools reach a thread in another project.
+            yield* invoke("t3_thread_organize", { threadId: foreignThreadId, action: "pin" });
+            expect((yield* orchestrator.getThreadShell(foreignThreadId))?.pinnedAt).not.toBeNull();
 
-            const foreignReadCall = yield* invoke("t3_thread_read", {
-              threadId: foreignThreadId,
-            });
-            expect(foreignReadCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
-              code: "thread_not_found",
-            });
-            const foreignUpdateCall = yield* invoke("t3_thread_update", {
+            const foreignRead = yield* decodeThreadReadResult(
+              (yield* invoke("t3_thread_read", { threadId: foreignThreadId })).structuredContent,
+            ).pipe(Effect.orDie);
+            expect(foreignRead.thread.threadId).toBe(foreignThreadId);
+
+            yield* invoke("t3_thread_update", {
               threadId: foreignThreadId,
               action: "rename",
-              title: "Should stay foreign",
+              title: "Renamed across projects",
             });
-            expect(foreignUpdateCall.structuredContent).toMatchObject({
-              _tag: "OrchestratorMcpFailure",
-              code: "thread_not_found",
+            expect((yield* orchestrator.getThreadShell(foreignThreadId))?.title).toBe(
+              "Renamed across projects",
+            );
+
+            const foreignWait = yield* decodeThreadWaitResult(
+              (yield* invoke("t3_thread_wait", { threadId: foreignThreadId, timeoutMs: 1 }))
+                .structuredContent,
+            ).pipe(Effect.orDie);
+            expect(foreignWait.status).toBe("idle");
+
+            const missingReadCall = yield* invoke("t3_thread_read", {
+              threadId: ThreadId.make("thread:mcp-missing"),
             });
+            expect(missingReadCall.structuredContent).toMatchObject({ code: "thread_not_found" });
             const listCall = yield* invoke("t3_thread_list", {
               includeSubagents: false,
               limit: 100,
