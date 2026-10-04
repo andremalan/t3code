@@ -101,6 +101,8 @@ import * as VcsProcess from "./vcs/VcsProcess.ts";
 import * as VcsProvisioningService from "./vcs/VcsProvisioningService.ts";
 import * as VcsStatusBroadcaster from "./vcs/VcsStatusBroadcaster.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
+import * as Rooms from "./rooms/Rooms.ts";
+import * as RoomThreads from "./rooms/RoomThreads.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as ReviewService from "./review/ReviewService.ts";
 import * as SourceControlProviderRegistry from "./sourceControl/SourceControlProviderRegistry.ts";
@@ -506,6 +508,8 @@ const ProviderInstallationRefreshLive = Layer.effectDiscard(
 );
 
 const RuntimeCoreDependenciesBaseLive = Layer.mergeAll(
+  // HQ fork: rooms read threads and projects from the orchestrator below.
+  RoomThreads.layer.pipe(Layer.provideMerge(Rooms.layer)),
   AgentAwarenessRelay.layer,
   ThreadSettlementWorkerLive,
   Layer.effectDiscard(StorageCleanup.make.pipe(Effect.flatMap((service) => service.start()))).pipe(

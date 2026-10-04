@@ -197,6 +197,8 @@ export const ExecutionEnvironmentCapabilities = Schema.Struct({
       Absent on older servers, where clients must clone with the blocking
       `sourceControl.cloneRepository` call instead. */
   projectCloneTracking: Schema.optionalKey(Schema.Boolean),
+  /** HQ fork: server keeps rooms (`rooms.*`, `subscribeRooms`). */
+  rooms: Schema.optionalKey(Schema.Boolean),
   /** Server detects `platform.machine` and persists the `environmentIcon`
       setting. Older servers drop the key on write, so clients show the
       picker inert rather than offering a choice that would never stick. */

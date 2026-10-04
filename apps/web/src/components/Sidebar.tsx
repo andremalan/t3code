@@ -266,6 +266,7 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { HqRoomBar, sortThreadsByActivity, threadActivityMs, useHqRooms } from "../hqRooms";
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuShortcut, MenuTrigger } from "./ui/menu";
 import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "./ui/tooltip";
 import { MiddleTruncate } from "./ui/middle-truncate";
@@ -301,9 +302,11 @@ function compactSidebarTimeLabel(label: string): string {
   return label.endsWith(" ago") ? label.slice(0, -4) : label;
 }
 
+// Active rows show the same activity time the HQ fork sorts by.
 function threadTimeLabel(thread: SidebarThreadSummary): string {
-  const timestamp = thread.latestUserMessageAt ?? thread.updatedAt;
-  return compactSidebarTimeLabel(formatRelativeTimeLabel(timestamp));
+  return compactSidebarTimeLabel(
+    formatRelativeTimeLabel(new Date(threadActivityMs(thread)).toISOString()),
+  );
 }
 
 // Settled rows read "how long ago did this wrap up", matching their sort
@@ -2598,6 +2601,8 @@ export default function Sidebar() {
           ),
     [scopedProjectGroup],
   );
+  const { selectedThreadIds: hqRoomThreadIds } = useHqRooms();
+  const threadSortOrder = useClientSettings((s) => s.sidebarThreadSortOrder);
   // A persisted scope whose project is gone falls back to all projects, but
   // only after every catalog environment has a live project snapshot. Cached
   // or disconnected environments cannot establish that the project is gone.
@@ -2706,7 +2711,9 @@ export default function Sidebar() {
     const preciseNow = new Date().toISOString();
     // Subagent child threads live in the parent's Agents surface, not the
     // sidebar roster (v2 models them as real threads with lineage).
-    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys);
+    const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys).filter(
+      (thread) => hqRoomThreadIds === null || hqRoomThreadIds.has(thread.id),
+    );
     inboxReturns.observe(workingShelfEnabled ? threads : null);
     const pinned: EnvironmentThreadShell[] = [];
     const active: EnvironmentThreadShell[] = [];
@@ -2728,7 +2735,10 @@ export default function Sidebar() {
       const supportsSettlement = capabilities?.threadSettlement === true;
       const supportsSnooze = capabilities?.threadSnooze === true;
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-      if (capabilities?.threadActiveReorder === true) activeReorderable.add(threadKey);
+      // Activity order has no manual positions, so dragging active rows is off.
+      if (capabilities?.threadActiveReorder === true && threadSortOrder === "created_at") {
+        activeReorderable.add(threadKey);
+      }
       // Older servers retain their existing drag actions. Active placement
       // additionally requires its own ordering capability at the drop target.
       if (capabilities?.threadPinning === true && capabilities.threadPinReorder === true) {
@@ -2775,7 +2785,9 @@ export default function Sidebar() {
     const sortedPinned = sortPinnedThreadsForSidebar(pinned);
     const sortedActive = workingShelfEnabled
       ? sortInboxThreadsByReturn(active, inboxReturns.returnedAt)
-      : sortThreadsForSidebar(active);
+      : threadSortOrder === "updated_at"
+        ? sortThreadsByActivity(active)
+        : sortThreadsForSidebar(active);
     return {
       pinnedThreads:
         optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
@@ -2807,11 +2819,13 @@ export default function Sidebar() {
       snoozeNow: preciseNow,
     };
   }, [
+    hqRoomThreadIds,
     nowMinute,
     optimisticDrop,
     scopedProjectKeys,
     serverConfigs,
     snoozeWakeTick,
+    threadSortOrder,
     threads,
     workingShelfEnabled,
   ]);
@@ -4987,6 +5001,7 @@ export default function Sidebar() {
               activeSearchResultIndex={activeSearchResultIndex}
               onClearSearch={clearThreadSearch}
             />
+            <HqRoomBar />
           </SidebarGroup>
         }
       >
