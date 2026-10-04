@@ -852,6 +852,9 @@ const make = Effect.gen(function* () {
               fields,
             )
       ).pipe(Effect.mapError(threadManagementFailure));
+      if (target.thread.deletedAt !== null) {
+        return yield* failure("thread_not_found", `Thread ${threadId} is no longer available.`);
+      }
       return { parent, target } as const;
     });
 

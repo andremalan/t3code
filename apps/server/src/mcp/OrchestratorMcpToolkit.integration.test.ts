@@ -2344,11 +2344,22 @@ describe("orchestrator MCP toolkit", () => {
               "Renamed across projects",
             );
 
-            const foreignWait = yield* decodeThreadWaitResult(
-              (yield* invoke("t3_thread_wait", { threadId: foreignThreadId, timeoutMs: 1 }))
-                .structuredContent,
+            const foreignSent = yield* decodeThreadSendResult(
+              (yield* invoke("t3_thread_send", {
+                threadId: foreignThreadId,
+                message: "Hello from another project.",
+                clientRequestId: "foreign-project-send",
+              })).structuredContent,
             ).pipe(Effect.orDie);
-            expect(foreignWait.status).toBe("idle");
+            expect(foreignSent.delivery).toBe("started");
+            const foreignWait = yield* decodeThreadWaitResult(
+              (yield* invoke("t3_thread_wait", {
+                threadId: foreignThreadId,
+                runId: foreignSent.runId,
+                timeoutMs: 10_000,
+              })).structuredContent,
+            ).pipe(Effect.orDie);
+            expect(foreignWait).toMatchObject({ status: "completed", timedOut: false });
 
             const missingReadCall = yield* invoke("t3_thread_read", {
               threadId: ThreadId.make("thread:mcp-missing"),
