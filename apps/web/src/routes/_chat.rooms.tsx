@@ -164,7 +164,7 @@ function RoomsRouteView() {
           <span className="hidden text-xs text-muted-foreground md:inline">
             Open a room for its threads and shelf; it also filters the sidebar. Drag rooms to
             reorder them, and drag a thread onto a room to add it. Hover a room&apos;s thread to
-            replace or remove it. Esc to go back.
+            replace or settle it. Esc to go back.
           </span>
           {status ? (
             <span role="status" className="ml-auto text-xs text-muted-foreground">

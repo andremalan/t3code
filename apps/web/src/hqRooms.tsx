@@ -637,8 +637,9 @@ function HqReplaceDialog({
           <DialogHeader>
             <DialogTitle>Replace agent</DialogTitle>
             <DialogDescription>
-              Starts a fresh agent in the same worktree and rooms, handed the room note and{" "}
-              {thread.title}&apos;s last reply. The old thread is settled.
+              Forks {thread.title} into a fresh agent in the same worktree and rooms. The
+              conversation carries over, the agent gets the room note, and the old thread is
+              settled.
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="flex flex-col gap-2 text-sm">
