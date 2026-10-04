@@ -138,7 +138,16 @@ export const make = Effect.gen(function* () {
       return found;
     });
 
-  const resolveModel = (provider: string | undefined, model: string | undefined) =>
+  /**
+   * A named model, matched by slug, name or alias. Without one: the source thread's own model and
+   * options when the provider is the same, else the top of the provider's list, its flagship. The
+   * provider's own default is often a cheaper tier than the user picks.
+   */
+  const resolveModel = (
+    provider: string | undefined,
+    model: string | undefined,
+    source: ModelSelection,
+  ) =>
     Effect.gen(function* () {
       const usable = (yield* providers.getProviders).filter(
         (each) => each.enabled && each.installed && each.models.length > 0,
@@ -151,22 +160,22 @@ export const make = Effect.gen(function* () {
               (each.displayName !== undefined && same(each.displayName, provider)),
           )
         : usable;
+      if (model === undefined) {
+        const own = candidates.find((each) => each.instanceId === source.instanceId);
+        if (own) return source;
+      }
       const matches = candidates.flatMap((each) =>
         each.models
-          .filter((option) =>
-            model === undefined
-              ? option.isDefault === true
-              : same(option.slug, model) ||
-                same(option.name, model) ||
-                (option.aliases ?? []).some((alias) => same(alias, model)),
+          .filter(
+            (option) =>
+              model === undefined ||
+              same(option.slug, model) ||
+              same(option.name, model) ||
+              (option.aliases ?? []).some((alias) => same(alias, model)),
           )
           .map((option) => ({ instanceId: each.instanceId, model: option.slug })),
       );
-      const chosen =
-        matches[0] ??
-        (model === undefined && candidates[0]
-          ? { instanceId: candidates[0].instanceId, model: candidates[0].models[0]!.slug }
-          : undefined);
+      const chosen = matches[0];
       if (!chosen) {
         return yield* new RoomsError({
           message: `No installed provider model matches ${[provider, model].filter(Boolean).join(" / ")}. Available: ${usable.map((each) => `${each.instanceId} (${each.models.map((option) => option.slug).join(", ")})`).join("; ")}.`,
@@ -183,7 +192,7 @@ export const make = Effect.gen(function* () {
       const modelSelection =
         input.modelSelection ??
         (input.provider !== undefined || input.model !== undefined
-          ? yield* resolveModel(input.provider, input.model)
+          ? yield* resolveModel(input.provider, input.model, source.modelSelection)
           : source.modelSelection);
       const seated =
         input.room === undefined
