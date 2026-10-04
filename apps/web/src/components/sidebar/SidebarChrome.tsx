@@ -5,6 +5,7 @@ import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { useEnvironmentIdentificationMode } from "../../hooks/useSettings";
 import { cn } from "../../lib/utils";
+import { HqRoomsLink } from "../../hqRooms";
 import { usePullRequestsSupported } from "../../state/environments";
 import { T3Wordmark } from "../T3Wordmark";
 import {
@@ -64,6 +65,7 @@ export const SidebarChromeHeader = memo(function SidebarChromeHeader({
           The padding keeps the brand's focus ring inside the clip. */}
       <div className="relative z-10 flex h-8 min-w-0 flex-1 flex-wrap content-start items-center gap-x-2 overflow-hidden py-0.5">
         <SidebarBrand onBackdrop={backdropVariant !== null} />
+        <HqRoomsLink onBackdrop={backdropVariant !== null} />
         {pillLabel ? (
           <div className="ml-1 flex h-7 items-center">
             <Badge data-environment-identification="pill" size="sm" variant="secondary">

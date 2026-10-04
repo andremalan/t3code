@@ -29,6 +29,8 @@ const RIGHT_PANEL_KINDS = [
   "terminal",
   "pull-request",
   "pull-requests",
+  // HQ Rooms spike.
+  "shelf",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -84,7 +86,9 @@ export type RightPanelSurface =
       url?: string;
     }
   /** The thread's linked pull requests, one singleton tab beside any number of `pull-request` tabs. */
-  | { id: "pull-requests"; kind: "pull-requests" };
+  | { id: "pull-requests"; kind: "pull-requests" }
+  /** HQ Rooms spike: the shelf of the thread's HQ room. */
+  | { id: "shelf"; kind: "shelf" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v9 removed the "plan" surface kind (plans render inline in the transcript).
@@ -206,6 +210,8 @@ const singletonSurface = (
       return { id: "files", kind };
     case "pull-requests":
       return { id: "pull-requests", kind };
+    case "shelf":
+      return { id: "shelf", kind };
     case "device":
       return { id: "device", kind };
   }

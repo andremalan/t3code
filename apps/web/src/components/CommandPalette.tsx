@@ -50,9 +50,11 @@ import {
   ChevronRightIcon,
   CornerLeftUpIcon,
   FileSearchIcon,
+  FileTextIcon,
   FolderGit2Icon,
   FolderIcon,
   FolderPlusIcon,
+  LayoutGridIcon,
   MessageSquareDashedIcon,
   LinkIcon,
   MessageSquareIcon,
@@ -111,6 +113,15 @@ import { useNewProject } from "../hooks/useNewProject";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
 import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
 import { useProjects, useServerConfigs, useThreadShells, waitForProject } from "../state/entities";
+import {
+  hqRoomThreads,
+  shelfGroup,
+  useHqRooms,
+  useOpenHqRoom,
+  useOpenShelfDoc,
+  useRoomShelf,
+} from "../hqRooms";
+import { formatRelativeTimeLabel } from "../timestampFormat";
 import { useThreadSearch } from "../state/queries";
 import { resolveThreadActionProjectRef, startNewThreadFromContext } from "../lib/chatThreadActions";
 import {
@@ -788,6 +799,10 @@ function OpenCommandPaletteDialog(props: {
   }, [activeThreadReferenceCopyTarget]);
   const projectOrder = useUiStateStore((store) => store.projectOrder);
   const threads = useThreadShells();
+  const { rooms: hqRooms, selectedSlug: hqSelectedSlug } = useHqRooms();
+  const openHqRoom = useOpenHqRoom();
+  const openShelfDoc = useOpenShelfDoc();
+  const hqShelf = useRoomShelf(hqSelectedSlug);
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const {
     theme,
@@ -2245,6 +2260,17 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push({
     kind: "action",
+    value: "action:rooms",
+    searchTerms: ["open rooms", "hq", "overview", "filter"],
+    title: "Open rooms",
+    icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: "/rooms" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
     value: "action:settings",
     searchTerms: ["settings", "preferences", "configuration", "keybindings"],
     title: "Open settings",
@@ -2313,6 +2339,46 @@ function OpenCommandPaletteDialog(props: {
       });
     },
   }));
+  // HQ Rooms spike: a room opens its page (which filters the sidebar); "All threads"
+  // clears the filter. The selected room's shelf is searchable; its files open in a room thread.
+  const roomSearchItems: CommandPaletteActionItem[] = [null, ...hqRooms].map((room) => {
+    return {
+      kind: "action",
+      value: `room:${room?.slug ?? "all"}`,
+      searchTerms: room ? ["room", room.label, room.slug] : ["room", "all threads", "all rooms"],
+      title: room?.label ?? "All threads",
+      description: room
+        ? `${hqRoomThreads(room, threads).length} threads`
+        : "Clear the room filter",
+      icon: <LayoutGridIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        if (room) await navigate({ to: "/rooms/$slug", params: { slug: room.slug } });
+        else openHqRoom(null, hqRoomThreads(null, threads)[0]);
+      },
+    };
+  });
+  const hqSelectedRoom = hqRooms.find((room) => room.slug === hqSelectedSlug) ?? null;
+  const shelfSearchItems: CommandPaletteActionItem[] = hqSelectedRoom
+    ? (hqShelf.data ?? []).map((doc) => ({
+        kind: "action" as const,
+        value: `shelf:${hqSelectedRoom.slug}:${doc.ref}`,
+        searchTerms: [doc.title, hqSelectedRoom.label, shelfGroup(doc), "shelf"],
+        title: doc.title,
+        description: [hqSelectedRoom.label, shelfGroup(doc), doc.prState]
+          .filter(Boolean)
+          .join(" · "),
+        ...(doc.addedAt ? { timestamp: formatRelativeTimeLabel(doc.addedAt) } : {}),
+        icon: <FileTextIcon className={ITEM_ICON_CLASS} />,
+        run: async () =>
+          openShelfDoc(
+            doc,
+            hqRoomThreads(hqSelectedRoom, threads).map((thread) => ({
+              environmentId: thread.environmentId,
+              threadId: thread.id,
+            })),
+          ),
+      }))
+    : [];
   const sourceSelectionViewValue =
     addProjectEnvironmentId === null ? null : `sources:${addProjectEnvironmentId}`;
   const activeGroups =
@@ -2335,6 +2401,10 @@ function OpenCommandPaletteDialog(props: {
     isInSubmenu: currentView !== null,
     projectSearchItems: projectSearchItems,
     settingsSearchItems,
+    extraSearchGroups: [
+      { value: "rooms-search", label: "Rooms", items: roomSearchItems },
+      { value: "shelf-search", label: "Shelf", items: shelfSearchItems },
+    ],
     threadSearchItems:
       linkedThreadSearch?.linkedThreads && deferredQuery === linkedThreadSearch.query
         ? buildLinkedThreadActionItems({

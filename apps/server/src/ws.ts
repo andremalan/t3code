@@ -201,6 +201,8 @@ import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
 import { projectMutationOperation } from "./project/ProjectMutation.ts";
 import * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
+import * as Rooms from "./rooms/Rooms.ts";
+import * as RoomThreads from "./rooms/RoomThreads.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
@@ -1241,6 +1243,8 @@ const makeWsRpcLayer = (
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const worktreeSetupTracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
       const projectCloneTracker = yield* ProjectCloneTracker.ProjectCloneTracker;
+      const rooms = yield* Rooms.Rooms;
+      const roomThreads = yield* RoomThreads.RoomThreads;
       const repositoryIdentityResolver =
         yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
       const agentSessionScanner = yield* AgentSessionScanner.AgentSessionScanner;
@@ -3011,6 +3015,34 @@ const makeWsRpcLayer = (
         [WS_METHODS.subscribeProjectClones]: () =>
           observeRpcStream(WS_METHODS.subscribeProjectClones, projectCloneTracker.stream, {
             "rpc.aggregate": "source-control",
+          }),
+        [WS_METHODS.roomsCreate]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsCreate, rooms.create(input), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.roomsUpdate]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsUpdate, rooms.update(input), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.roomsReorder]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsReorder, rooms.reorder(input).pipe(Effect.as({})), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.roomsSetThread]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsSetThread, rooms.setThread(input).pipe(Effect.as({})), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.roomsReplaceThread]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsReplaceThread, roomThreads.replace(input), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.roomsShelf]: (input) =>
+          observeRpcEffect(WS_METHODS.roomsShelf, rooms.shelf(input.slug), {
+            "rpc.aggregate": "rooms",
+          }),
+        [WS_METHODS.subscribeRooms]: () =>
+          observeRpcStream(WS_METHODS.subscribeRooms, rooms.stream, {
+            "rpc.aggregate": "rooms",
           }),
         [WS_METHODS.sourceControlPublishRepository]: (input) =>
           observeRpcEffect(

@@ -14,6 +14,7 @@ import type {
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
+  LibraryBig,
   Smartphone,
   ChevronDown,
   ChevronLeft,
@@ -123,6 +124,8 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** HQ Rooms spike: absent hides the Shelf entry. */
+  onAddShelf?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -320,6 +323,8 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  /** HQ Rooms spike: absent hides the Shelf entry. */
+  onAddShelf?: (() => void) | undefined;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -379,6 +384,15 @@ function RightPanelEmptyState(props: {
       available: props.pullRequestsAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.pullRequests,
       onClick: props.onAddPullRequests,
+    },
+    {
+      label: "Shelf",
+      icon: LibraryBig,
+      shortcut: "S",
+      available: props.onAddShelf !== undefined,
+      disabledReason: "The shelf is only available from a thread.",
+      onClick: props.onAddShelf ?? (() => {}),
+      badgeCount: 0,
     },
     {
       label: "Device",
@@ -596,6 +610,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "shelf":
+      return "Shelf";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -679,6 +695,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "shelf":
+      return <LibraryBig className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -880,6 +898,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.pullRequestsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.pullRequests,
       onClick: props.onAddPullRequests,
+    },
+    {
+      label: "Shelf",
+      icon: LibraryBig,
+      shortcut: "S",
+      available: props.onAddShelf !== undefined,
+      disabledReason: "The shelf is only available from a thread.",
+      onClick: props.onAddShelf ?? (() => {}),
     },
     {
       label: "Device",
@@ -1371,6 +1397,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            onAddShelf={props.onAddShelf}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
