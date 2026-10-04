@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 
 import { IsoDateTime, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { ModelSelection } from "./orchestration.ts";
+import { ModelSelection } from "./modelSelection.ts";
 
 /** HQ fork: rooms group threads. A room's slug is its stable id; renaming changes the title only. */
 export const RoomSlug = Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)).check(
