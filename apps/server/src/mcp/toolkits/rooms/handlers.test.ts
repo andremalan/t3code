@@ -46,7 +46,11 @@ const thread = (id: ThreadId, title: string): OrchestrationThreadShell => ({
   id,
   projectId: ProjectId.make("project-1"),
   title,
-  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5" },
+  modelSelection: {
+    instanceId: ProviderInstanceId.make("codex"),
+    model: "gpt-5.6-terra",
+    options: [{ id: "effort", value: "high" }],
+  },
   runtimeMode: "approval-required",
   interactionMode: "plan",
   branch: null,
@@ -106,9 +110,10 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
               driver: "codex",
               enabled: true,
               installed: true,
+              // The vendor's default is a cheaper tier than the flagship at the top.
               models: [
-                { slug: "gpt-5", name: "GPT-5", isDefault: true },
-                { slug: "gpt-5-codex", name: "GPT-5 Codex" },
+                { slug: "gpt-6.1-sol", name: "GPT-6.1 Sol" },
+                { slug: "gpt-6-astra", name: "GPT-6 Astra", isDefault: true },
               ],
             },
             {
@@ -117,7 +122,10 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
               displayName: "Claude",
               enabled: true,
               installed: true,
-              models: [{ slug: "claude-opus-5-5", name: "Claude Opus 5.5", isDefault: true }],
+              models: [
+                { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
+                { slug: "claude-fable-5-1", name: "Claude Fable 5.1", isDefault: true },
+              ],
             },
           ] as never),
         }),
@@ -355,17 +363,27 @@ describe("rooms toolkit handlers", () => {
         });
         expect(elsewhere).toMatchObject({ worktreePath: null, branch: null });
         const [elsewhereCreate] = yield* Ref.get(commands);
+        // Another provider without a model gets its flagship, not its default tier.
         expect(elsewhereCreate).toMatchObject({
           projectId: "project-2",
           modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" },
         });
+        yield* Ref.set(commands, []);
+        yield* call("start_thread", {
+          prompt: "Review.",
+          title: "Same provider",
+          provider: "codex",
+        });
+        const [sameCreate] = yield* Ref.get(commands);
+        // The caller's own provider keeps the caller's model and options.
+        expect(sameCreate).toMatchObject({ modelSelection: thread(ME, "Me").modelSelection });
         const unknown = yield* call("start_thread", {
           prompt: "x",
           title: "x",
           provider: "codex",
           model: "gpt-9",
         }).pipe(Effect.flip);
-        expect(unknown.message).toContain("codex (gpt-5, gpt-5-codex)");
+        expect(unknown.message).toContain("codex (gpt-6.1-sol, gpt-6-astra)");
 
         yield* Ref.set(commands, []);
         const replacement = yield* launcher.replace({ threadId: PEER });

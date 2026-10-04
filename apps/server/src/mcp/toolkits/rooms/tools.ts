@@ -162,7 +162,8 @@ const StartThreadTool = Tool.make("start_thread", {
       description: "Provider such as codex or claudeAgent. Defaults to this thread's.",
     }),
     model: Schema.optional(TrimmedNonEmptyString).annotate({
-      description: "Model slug or name; the provider's default when only provider is given.",
+      description:
+        "Model slug or name. With only provider: this thread's model if it is the same provider, else that provider's flagship.",
     }),
   }),
   success: Schema.Struct({
