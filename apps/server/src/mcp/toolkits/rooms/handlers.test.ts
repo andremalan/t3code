@@ -22,6 +22,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { Tool } from "effect/unstable/ai";
 
 import { GitWorkflowService } from "../../../git/GitWorkflowService.ts";
@@ -77,6 +78,32 @@ const threads = new Map([
   [BUSY, { ...thread(BUSY, "Busy"), session: { status: "running" } as never }],
 ]);
 
+const DETAIL = {
+  messages: [
+    {
+      id: "m1",
+      role: "assistant",
+      text: "Old news.",
+      createdAt: "t1",
+      streaming: false,
+    },
+    {
+      id: "m2",
+      role: "user",
+      text: "Keep going.",
+      createdAt: "t2",
+      streaming: false,
+    },
+    {
+      id: "m3",
+      role: "assistant",
+      text: "Shipped slice 2; slice 3 is next.",
+      createdAt: "t3",
+      streaming: false,
+    },
+  ],
+} as never;
+
 const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
   const commands = yield* Ref.make<ReadonlyArray<OrchestrationCommand>>([]);
   const setupRuns = yield* Ref.make<ReadonlyArray<string>>([]);
@@ -94,34 +121,9 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
               { id: ProjectId.make("project-1"), title: "hq", workspaceRoot: "/repo" },
               { id: ProjectId.make("project-2"), title: "Dex", workspaceRoot: "/code/dex-app" },
             ] as never),
-          getThreadDetailById: () =>
-            Effect.succeed(
-              Option.some({
-                messages: [
-                  {
-                    id: "m1",
-                    role: "assistant",
-                    text: "Old news.",
-                    createdAt: "t1",
-                    streaming: false,
-                  },
-                  {
-                    id: "m2",
-                    role: "user",
-                    text: "Keep going.",
-                    createdAt: "t2",
-                    streaming: false,
-                  },
-                  {
-                    id: "m3",
-                    role: "assistant",
-                    text: "Shipped slice 2; slice 3 is next.",
-                    createdAt: "t3",
-                    streaming: false,
-                  },
-                ],
-              } as never),
-            ),
+          getThreadDetailById: () => Effect.succeed(Option.some(DETAIL)),
+          getThreadDetailSnapshot: () =>
+            Effect.succeed(Option.some({ snapshotSequence: 0, thread: DETAIL } as never)),
         }),
         Layer.mock(ProviderRegistry)({
           getProviders: Effect.succeed([
@@ -168,6 +170,7 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
               Effect.as({ sequence: 1 }),
             ),
           streamDomainEvents: Stream.empty,
+          subscribeDomainEvents: Effect.succeed(Stream.empty),
           latestSequence: Effect.succeed(0),
         }),
         NodeServices.layer,
@@ -206,6 +209,7 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
     rooms,
     setupRuns,
     setupResult,
+    context,
     launcher: Context.get(context, ThreadLauncher.ThreadLauncher),
   };
 });
@@ -492,7 +496,7 @@ describe("rooms toolkit handlers", () => {
   it.effect("reads threads, waits for them to go idle, and settles them when their turn ends", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const { call, commands } = yield* makeHarness();
+        const { call, commands, context } = yield* makeHarness();
         const busy = threads.get(BUSY)!;
 
         const newer = yield* call("thread_read", { threadId: PEER, after: "m1", limit: 1 });
@@ -504,7 +508,7 @@ describe("rooms toolkit handlers", () => {
           Effect.forkChild,
         );
         threads.set(BUSY, { ...busy, session: { status: "ready" } as never });
-        yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("15 seconds");
         expect((yield* Fiber.join(reading)).working).toBe(false);
         threads.set(BUSY, busy);
         const stillBusy = yield* call("thread_read", { threadId: BUSY, waitSeconds: 10 }).pipe(
@@ -533,9 +537,23 @@ describe("rooms toolkit handlers", () => {
         });
         expect(yield* Ref.get(commands)).toEqual([]);
         threads.set(BUSY, { ...busy, session: { status: "ready" } as never });
-        yield* TestClock.adjust("5 seconds");
+        yield* TestClock.adjust("15 seconds");
         while ((yield* Ref.get(commands)).length === 0) yield* Effect.yieldNow;
         expect(yield* Ref.get(commands)).toMatchObject([{ type: "thread.settle", threadId: BUSY }]);
+        threads.set(BUSY, busy);
+
+        // A settle recorded before a restart resumes when the server starts again.
+        yield* Ref.set(commands, []);
+        const sql = Context.get(context, SqlClient.SqlClient);
+        yield* sql`INSERT INTO hq_pending_settles VALUES (${BUSY}, 1, '2026-10-04T00:00:00.000Z')`;
+        // The turn ended while the server was down; the restarted launcher settles on its first check.
+        threads.set(BUSY, { ...busy, session: { status: "ready" } as never });
+        yield* Layer.build(Layer.fresh(ThreadLauncher.layer)).pipe(Effect.provide(context));
+        while ((yield* Ref.get(commands)).length === 0) yield* Effect.yieldNow;
+        expect(yield* Ref.get(commands)).toMatchObject([
+          { type: "thread.archive", threadId: BUSY },
+        ]);
+        while ((yield* sql`SELECT 1 FROM hq_pending_settles`).length > 0) yield* Effect.yieldNow;
         threads.set(BUSY, busy);
 
         yield* Ref.set(commands, []);

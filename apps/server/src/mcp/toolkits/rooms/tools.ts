@@ -200,7 +200,7 @@ const ThreadMessageEntry = Schema.Struct({
 
 const ThreadReadTool = Tool.make("thread_read", {
   description:
-    "Read another thread's latest messages, such as a reviewer's findings or a peer's reply. Pass after (a message id) to get only newer messages, and waitSeconds to wait for the thread to finish its current turn first. working: true means it is still going when the wait ended; call again to keep waiting.",
+    "Read another thread's latest messages, such as a reviewer's findings or a peer's reply. Pass after (a message id) to get only newer messages, and waitSeconds (up to 50) to wait for the thread to finish its current turn first. working: true means it is still going when the wait ended; call again to keep waiting.",
   parameters: Schema.Struct({
     threadId: TrimmedNonEmptyString,
     after: Schema.optional(TrimmedNonEmptyString),
@@ -210,7 +210,7 @@ const ThreadReadTool = Tool.make("thread_read", {
       description: "Most recent messages to return. Defaults to 5.",
     }),
     waitSeconds: Schema.optional(
-      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 55 })),
+      Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 50 })),
     ).annotate({ description: "Wait up to this long for the thread to go idle. Defaults to 0." }),
   }),
   success: Schema.Struct({
