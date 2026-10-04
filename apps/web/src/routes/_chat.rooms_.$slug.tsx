@@ -19,6 +19,10 @@ const NOTE_MAX = 2000;
 /** The room's outcome, and the way to rename the room or change its outcome. */
 function RoomDetails(props: { slug: string; title: string; outcome: string }) {
   const [draft, setDraft] = useState<{ title: string; outcome: string } | null>(null);
+  // What the form opened with: a field counts as changed only against this, so an update from
+  // another client while the form is open is not overwritten by a field left alone.
+  const [opened, setOpened] = useState({ title: "", outcome: "" });
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (draft === null) {
     return (
@@ -31,6 +35,7 @@ function RoomDetails(props: { slug: string; title: string; outcome: string }) {
           variant="ghost"
           onClick={() => {
             setError("");
+            setOpened({ title: props.title, outcome: props.outcome });
             setDraft({ title: props.title, outcome: props.outcome });
           }}
         >
@@ -45,10 +50,21 @@ function RoomDetails(props: { slug: string; title: string; outcome: string }) {
       onSubmit={(event) => {
         event.preventDefault();
         setError("");
-        updateHqRoom(props.slug, draft).then(
-          () => setDraft(null),
-          (failure: unknown) =>
-            setError(failure instanceof Error ? failure.message : String(failure)),
+        const changed = {
+          ...(draft.title.trim() !== opened.title ? { title: draft.title } : {}),
+          ...(draft.outcome.trim() !== opened.outcome ? { outcome: draft.outcome } : {}),
+        };
+        if (Object.keys(changed).length === 0) return setDraft(null);
+        setBusy(true);
+        updateHqRoom(props.slug, changed).then(
+          () => {
+            setBusy(false);
+            setDraft(null);
+          },
+          (failure: unknown) => {
+            setBusy(false);
+            setError(failure instanceof Error ? failure.message : String(failure));
+          },
         );
       }}
     >
@@ -59,6 +75,7 @@ function RoomDetails(props: { slug: string; title: string; outcome: string }) {
           required
           maxLength={120}
           autoFocus
+          disabled={busy}
           onChange={(event) => setDraft({ ...draft, title: event.target.value })}
           className="h-8 rounded-md border border-input bg-background px-2 text-sm"
         />
@@ -69,6 +86,7 @@ function RoomDetails(props: { slug: string; title: string; outcome: string }) {
           value={draft.outcome}
           maxLength={500}
           rows={3}
+          disabled={busy}
           onChange={(event) => setDraft({ ...draft, outcome: event.target.value })}
           className="rounded-md border border-input bg-background px-2 py-1 text-sm"
         />
@@ -80,12 +98,13 @@ function RoomDetails(props: { slug: string; title: string; outcome: string }) {
           size="xs"
           variant="outline"
           className="ml-auto"
+          disabled={busy}
           onClick={() => setDraft(null)}
         >
           Cancel
         </Button>
-        <Button type="submit" size="xs">
-          Save
+        <Button type="submit" size="xs" disabled={busy}>
+          {busy ? "Saving…" : "Save"}
         </Button>
       </div>
     </form>
