@@ -19,7 +19,7 @@ import type {
 import { ROOM_SECTIONS, ThreadId } from "@t3tools/contracts";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import {
   CheckIcon,
   ChevronDownIcon,
