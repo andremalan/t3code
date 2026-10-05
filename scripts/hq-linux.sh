@@ -73,6 +73,8 @@ Environment="T3CODE_HOME=$T3_HOME"
 ExecStart="$node" "$SERVER" $args
 Restart=always
 RestartSec=5
+# The server exits 130 after a clean shutdown on SIGTERM.
+SuccessExitStatus=130 143
 KillMode=mixed
 TimeoutStopSec=30
 
