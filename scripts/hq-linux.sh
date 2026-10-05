@@ -4,7 +4,7 @@
 #   scripts/hq-linux.sh install               build, install the service, start it, print a pairing link
 #   scripts/hq-linux.sh update                fast-forward to origin/$T3HQ_BRANCH, rebuild, restart
 #   scripts/hq-linux.sh rebuild               rebuild and restart whatever is checked out
-#   scripts/hq-linux.sh pair [t3 pair args]   print a fresh pairing link
+#   scripts/hq-linux.sh pair [t3 pair args]   print a fresh pairing link; --tailscale gives an HTTPS tailnet one
 #   scripts/hq-linux.sh import-rooms <bundle> add rooms and shelves exported from another machine
 #   scripts/hq-linux.sh status | logs | uninstall
 #
@@ -114,6 +114,7 @@ case ${1:-} in
     enable_linger
     wait_ready
     pair
+    say "On a tailnet, $ROOT/scripts/hq-linux.sh pair --tailscale publishes it over HTTPS and links to that."
     ;;
   update)
     check_tools
