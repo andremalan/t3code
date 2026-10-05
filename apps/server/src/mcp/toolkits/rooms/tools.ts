@@ -45,6 +45,9 @@ export const RoomContextEntry = Schema.Struct({
       "The room's shared board: where things stand and what is next. Null until written.",
   }),
   threads: Schema.Array(RoomThreadEntry),
+  shelfDir: Schema.String.annotate({
+    description: "The folder holding the room's shelved files; anything written here is shelved.",
+  }),
   shelf: Schema.Struct({
     total: Schema.Int,
     recent: Schema.Array(RoomShelfDoc).annotate({ description: "Newest first, at most 25." }),
@@ -61,7 +64,7 @@ export type RoomContextResult = typeof RoomContextResult.Type;
 
 const RoomContextTool = Tool.make("room_context", {
   description:
-    "Read this thread's room: its outcome, its note (the shared board of where things stand), the threads in it with their status, and the newest shelf documents (PRs, files under cc/<room>/ in member worktrees, recorded links). Read it when you start, after compaction, and at natural work boundaries.",
+    "Read this thread's room: its outcome, its note (the shared board of where things stand), the threads in it with their status, and the newest shelf documents (PRs, shelved files, recorded links). Read it when you start, after compaction, and at natural work boundaries.",
   parameters: Schema.Struct({ room: Schema.optional(RoomInput) }),
   success: RoomContextResult,
   failure: RoomsError,
@@ -75,15 +78,21 @@ const RoomContextTool = Tool.make("room_context", {
 
 const ShelfAddTool = Tool.make("shelf_add", {
   description:
-    "Put a deliverable on the room's shelf: a URL, or a file path (absolute, or relative to this thread's worktree). Files under cc/<room>/ in a member worktree are shelved automatically; use this for anything else. Pull requests are not shelved: link them with link_pull_request and the room shows them. Adding the same ref again updates its title.",
+    "Put a deliverable on the room's shelf: a URL, or a file path (absolute, or relative to this thread's worktree). A file is copied into the room's shelf folder, which outlives worktrees; link to the returned ref when you mention it. Shelving under the same name again replaces the copy, so shelve again after changing a deliverable. Pull requests are not shelved: link them with link_pull_request and the room shows them. Adding the same URL again updates its title.",
   parameters: Schema.Struct({
     ref: TrimmedNonEmptyString.annotate({ description: "URL or file path." }),
     title: Schema.optional(TrimmedNonEmptyString),
+    name: Schema.optional(
+      TrimmedNonEmptyString.annotate({
+        description:
+          "Path for a file inside the shelf folder, like notes/plan.md. Defaults to the file's name.",
+      }),
+    ),
     room: Schema.optional(RoomInput),
   }),
   success: Schema.Struct({
     room: Schema.String,
-    ref: Schema.String,
+    ref: Schema.String.annotate({ description: "The URL, or the shelved copy's path." }),
     title: Schema.String,
     kind: Schema.String,
   }),
@@ -97,7 +106,7 @@ const ShelfAddTool = Tool.make("shelf_add", {
   .annotate(Tool.OpenWorld, false);
 
 const RoomNoteTool = Tool.make("room_note", {
-  description: `Replace the room's note: the shared board every thread in the room reads through room_context. Write the whole note, not a diff: where things stand, open threads of work (who has them), decisions that hold, and next steps. Keep it under ${ROOM_NOTE_MAX_LENGTH} characters; history and detail go in cc/<room>/ documents. Update it at boundaries (a slice landed, a blocker, a decision, handing off), not every turn. Read room_context first and pass the note's revision as basedOn (null when the room has no note): if another thread wrote in between, the update is refused so you can reread and merge. An empty note clears it.`,
+  description: `Replace the room's note: the shared board every thread in the room reads through room_context. Write the whole note, not a diff: where things stand, open threads of work (who has them), decisions that hold, and next steps. Keep it under ${ROOM_NOTE_MAX_LENGTH} characters; history and detail go in shelf documents. Update it at boundaries (a slice landed, a blocker, a decision, handing off), not every turn. Read room_context first and pass the note's revision as basedOn (null when the room has no note): if another thread wrote in between, the update is refused so you can reread and merge. An empty note clears it.`,
   parameters: Schema.Struct({
     note: Schema.String,
     basedOn: Schema.NullOr(Schema.Int).annotate({

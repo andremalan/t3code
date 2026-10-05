@@ -35,7 +35,7 @@ const StubServicesLive = Layer.mergeAll(
   Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({}),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(ProjectService.ProjectService)({}),
-  Layer.mock(Rooms.Rooms)({}),
+  Layer.mock(Rooms.Rooms)({ shelfDir: (slug) => slug }),
   ServerSettings.layerTest({}),
   Layer.mock(GitWorkflowService.GitWorkflowService)({}),
   Layer.mock(ProjectSetupScriptRunner.ProjectSetupScriptRunner)({}),

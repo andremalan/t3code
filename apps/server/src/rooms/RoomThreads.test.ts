@@ -8,9 +8,9 @@ import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 
+import * as ServerConfig from "../config.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { ProjectService } from "../project/ProjectService.ts";
 import * as Rooms from "./Rooms.ts";
 import * as RoomThreads from "./RoomThreads.ts";
 
@@ -67,7 +67,9 @@ const makeHarness = Effect.fn("makeRoomThreadsHarness")(function* () {
           sendToThread: (input) => record({ type: "send", ...input }).pipe(Effect.as({} as never)),
           streamDomainEvents: Stream.fromQueue(events) as never,
         }),
-        Layer.mock(ProjectService)({ listShells: () => Effect.succeed([]) }),
+        ServerConfig.layerTest(process.cwd(), { prefix: "room-threads-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
         NodeServices.layer,
       ),
     ),

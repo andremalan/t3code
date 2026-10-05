@@ -1,6 +1,6 @@
 // HQ Rooms: one room's page. Visiting it filters the sidebar to the room, which lists its
 // threads (settled ones under Settled); the page holds the shelf. Shelf files open in a room
-// thread's file preview.
+// thread's file preview, or the newest thread's when the room has none.
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { RoomNote } from "@t3tools/contracts";
 import { useEffect, useMemo, useState } from "react";
@@ -201,14 +201,13 @@ function RoomRouteView() {
   const { rooms } = useHqRooms();
   const threads = usePrimaryThreadShells();
   const room = rooms.find((candidate) => candidate.slug === slug) ?? null;
-  const threadRefs = useMemo(
-    () =>
-      (room ? hqRoomThreads(room, threads, { includeSettled: true }) : []).map((thread) => ({
-        environmentId: thread.environmentId,
-        threadId: thread.id,
-      })),
-    [room, threads],
-  );
+  const threadRefs = useMemo(() => {
+    const members = room ? hqRoomThreads(room, threads, { includeSettled: true }) : [];
+    // A room without threads (one carried over from another machine, say) still opens its files.
+    return (members.length > 0 ? members : hqRoomThreads(null, threads).slice(0, 1)).map(
+      (thread) => ({ environmentId: thread.environmentId, threadId: thread.id }),
+    );
+  }, [room, threads]);
 
   useEffect(() => selectHqRoom(slug), [slug]);
 

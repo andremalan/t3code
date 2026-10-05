@@ -1,7 +1,6 @@
 import { type Room, RoomsError, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
@@ -19,7 +18,6 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const rooms = yield* Rooms.Rooms;
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
 
   // Upstream's caller checks: reads need the orchestration capability, writes an active run that
@@ -94,6 +92,7 @@ const make = Effect.gen(function* () {
             ]
           : [],
       ),
+      shelfDir: rooms.shelfDir(room.slug),
       shelf: { total: shelf.length, recent: shelf.slice(0, RECENT_SHELF) },
     };
   });
@@ -116,12 +115,12 @@ const make = Effect.gen(function* () {
         } satisfies RoomContextResult;
       }),
 
-    shelf_add: ({ ref, title, room: slug }) =>
+    shelf_add: ({ ref, title, name, room: slug }) =>
       Effect.gen(function* () {
         const { threadId } = yield* writer;
         const room = yield* resolveRoom(slug, threadId);
         let resolved = ref;
-        if (!/^https?:\/\//i.test(ref)) {
+        if (!Rooms.isShelfLink(ref)) {
           const thread = yield* threadShell(threadId);
           const project = thread
             ? yield* projects.getShell(thread.projectId).pipe(
@@ -136,11 +135,14 @@ const make = Effect.gen(function* () {
             });
           }
           resolved = path.isAbsolute(ref) ? path.normalize(ref) : path.resolve(root!, ref);
-          if (!(yield* fs.exists(resolved).pipe(Effect.orElseSucceed(() => false)))) {
-            return yield* new RoomsError({ message: `There is no file at ${resolved}.` });
-          }
         }
-        const added = yield* rooms.addDocument({ slug: room.slug, ref: resolved, title, threadId });
+        const added = yield* rooms.addDocument({
+          slug: room.slug,
+          ref: resolved,
+          title,
+          name,
+          threadId,
+        });
         return { room: room.slug, ...added };
       }),
 
