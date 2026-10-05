@@ -84,7 +84,7 @@ EOF
 wait_ready() {
   local url=http://127.0.0.1:$PORT/.well-known/t3/environment
   for _ in $(seq 1 90); do
-    if curl -fsS "$url" >/dev/null 2>&1; then
+    if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
       say "Running on port $PORT"
       return
     fi
@@ -119,7 +119,9 @@ case ${1:-} in
     [[ -f $UNIT_FILE ]] || die "not installed. Run: $0 install"
     cd "$ROOT"
     [[ $(git rev-parse --abbrev-ref HEAD) == "$BRANCH" ]] || die "the checkout is not on $BRANCH."
-    git diff --quiet && git diff --cached --quiet || die "the checkout has uncommitted changes."
+    if ! git diff --quiet || ! git diff --cached --quiet; then
+      die "the checkout has uncommitted changes."
+    fi
     before=$(git rev-parse --short HEAD)
     git fetch --quiet origin "$BRANCH"
     git merge --ff-only --quiet "origin/$BRANCH"
@@ -151,6 +153,7 @@ case ${1:-} in
       # Existing shelf files win; the rows are INSERT OR IGNORE for the same reason.
       cp -a -n "$bundle/shelves/." "$T3_HOME/userdata/shelves/"
     fi
+    # shellcheck disable=SC2016 # the ${...} below is JavaScript
     (cd "$ROOT" && node -e '
       const { DatabaseSync } = require("node:sqlite");
       const db = new DatabaseSync(process.argv[1]);
@@ -163,7 +166,7 @@ case ${1:-} in
     ;;
   status)
     user_ctl status "$UNIT" --no-pager --lines 0 || true
-    curl -fsS "http://127.0.0.1:$PORT/.well-known/t3/environment" && echo
+    curl -fsS --max-time 3 "http://127.0.0.1:$PORT/.well-known/t3/environment" && echo
     ;;
   logs)
     journalctl --user -u "$UNIT" -f
