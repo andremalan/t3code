@@ -12,17 +12,34 @@
 # t3code-hq.service, and leaves t3code.service alone. Uninstalling keeps all data.
 #
 # Settings: T3HQ_PORT (3773), T3HQ_HOST (all interfaces), T3HQ_BRANCH (main), T3CODE_HOME (~/.t3).
+# Install remembers them; set one again on a later command to change it.
 # Needs git, a C toolchain and python3 (native modules), and vp (https://vite.plus) for Node and pnpm.
 set -euo pipefail
 
 UNIT=t3code-hq.service
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+CONFIG_DIR=${XDG_CONFIG_HOME:-$HOME/.config}
+UNIT_FILE=$CONFIG_DIR/systemd/user/$UNIT
+SETTINGS=$CONFIG_DIR/t3code-hq.env
+# Settings saved by the last successful build; ones set in the environment win.
+if [[ -f $SETTINGS ]]; then
+  while IFS='=' read -r key value; do
+    case $key in
+      T3HQ_PORT | T3HQ_HOST | T3HQ_BRANCH | T3CODE_HOME | T3HQ_DEPLOYED)
+        [[ -n ${!key+set} ]] || export "$key=$value"
+        ;;
+    esac
+  done <"$SETTINGS"
+fi
 PORT=${T3HQ_PORT:-3773}
 HOST=${T3HQ_HOST:-}
 BRANCH=${T3HQ_BRANCH:-main}
 T3_HOME=${T3CODE_HOME:-$HOME/.t3}
-UNIT_FILE=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/$UNIT
-SERVER=$ROOT/apps/server/dist/bin.mjs
+DEPLOYED=${T3HQ_DEPLOYED:-}
+# The service runs a copy of the build, so a failed rebuild leaves it intact. It sits under
+# apps/server (gitignored) so the server's native modules still resolve from its node_modules.
+RELEASE=$ROOT/apps/server/release
+SERVER=$RELEASE/current/bin.mjs
 # systemctl --user needs the user bus, which a non-login shell (cron, some ssh setups) lacks.
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
@@ -35,6 +52,14 @@ need() { command -v "$1" >/dev/null || die "$1 is missing. $2"; }
 user_ctl() { systemctl --user "$@"; }
 # The vp shim picks the Node version this checkout pins; the unit gets the real binary.
 node_bin() { (cd "$ROOT" && node -p process.execPath); }
+# A quoted systemd value: % starts a specifier; in ExecStart, $ also expands variables.
+unit_value() {
+  local value=${1//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//%/%%}
+  printf '"%s"' "$value"
+}
+unit_arg() { unit_value "${1//\$/\$\$}"; }
 
 check_tools() {
   need git "Install git."
@@ -46,37 +71,46 @@ check_tools() {
 }
 
 build() {
+  local dist=$ROOT/apps/server/dist
   say "Installing dependencies"
   (cd "$ROOT" && vp install --frozen-lockfile)
   say "Building server and web app"
   (cd "$ROOT" && vp run --filter t3 build)
-  [[ -f $SERVER && -f $ROOT/apps/server/dist/client/index.html ]] || die "the build did not produce $SERVER and its web app."
+  [[ -f $dist/bin.mjs && -f $dist/client/index.html ]] || die "the build did not produce $dist/bin.mjs and its web app."
+  rm -rf "$RELEASE/next" "$RELEASE/old"
+  mkdir -p "$RELEASE"
+  cp -a "$dist" "$RELEASE/next"
+  if [[ -d $RELEASE/current ]]; then mv "$RELEASE/current" "$RELEASE/old"; fi
+  mv "$RELEASE/next" "$RELEASE/current"
+  rm -rf "$RELEASE/old"
 }
 
 write_unit() {
-  local node args
-  node=$(node_bin)
-  args="serve --port $PORT --base-dir \"$T3_HOME\""
-  [[ -n $HOST ]] && args+=" --host $HOST"
+  local command
+  command="$(unit_arg "$(node_bin)") $(unit_arg "$SERVER") serve --port $(unit_arg "$PORT")"
+  command+=" --base-dir $(unit_arg "$T3_HOME")"
+  [[ -n $HOST ]] && command+=" --host $(unit_arg "$HOST")"
   mkdir -p "$(dirname "$UNIT_FILE")"
   # PATH is the installing shell's, so agents find the same claude, codex, gh and git.
   cat >"$UNIT_FILE" <<EOF
 [Unit]
-Description=T3 Code HQ (built from $ROOT)
+Description=T3 Code HQ
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 WorkingDirectory=%h
-Environment="PATH=$PATH"
-Environment="T3CODE_HOME=$T3_HOME"
-ExecStart="$node" "$SERVER" $args
+Environment=$(unit_value "PATH=$PATH")
+Environment=$(unit_value "T3CODE_HOME=$T3_HOME")
+ExecStart=$command
 Restart=always
 RestartSec=5
 # The server exits 130 after a clean shutdown on SIGTERM.
 SuccessExitStatus=130 143
 KillMode=mixed
 TimeoutStopSec=30
+# An agent's command killed for memory must not take the server down with it.
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target
@@ -84,10 +118,29 @@ EOF
   user_ctl daemon-reload
 }
 
+save_settings() {
+  DEPLOYED=$(git -C "$ROOT" rev-parse --short HEAD)
+  printf '%s\n' "T3HQ_PORT=$PORT" "T3HQ_HOST=$HOST" "T3HQ_BRANCH=$BRANCH" "T3CODE_HOME=$T3_HOME" \
+    "T3HQ_DEPLOYED=$DEPLOYED" >"$SETTINGS"
+}
+
+environment_url() {
+  local host=127.0.0.1
+  case $HOST in
+    "" | 0.0.0.0 | ::) ;;
+    *:*) host="[$HOST]" ;;
+    *) host=$HOST ;;
+  esac
+  echo "http://$host:$PORT/.well-known/t3/environment"
+}
+
+# Ready means this fork answers: upstream's server on the same port has no rooms.
 wait_ready() {
-  local url=http://127.0.0.1:$PORT/.well-known/t3/environment
+  local url body
+  url=$(environment_url)
   for _ in $(seq 1 90); do
-    if curl -fsS --max-time 3 "$url" >/dev/null 2>&1; then
+    body=$(curl -fsS --max-time 3 "$url" 2>/dev/null) || body=
+    if [[ $body == *'"rooms":true'* ]]; then
       say "Running on port $PORT"
       return
     fi
@@ -95,7 +148,7 @@ wait_ready() {
     sleep 1
   done
   user_ctl status "$UNIT" --no-pager --lines 30 || true
-  die "the server did not come up on port $PORT. See: $0 logs"
+  die "the server did not come up at $url, or another server holds the port. See: $0 logs"
 }
 
 pair() { node "$SERVER" pair --base-dir "$T3_HOME" "$@"; }
@@ -112,9 +165,11 @@ case ${1:-} in
     check_tools
     build
     write_unit
-    user_ctl enable --now "$UNIT"
+    user_ctl enable "$UNIT"
+    user_ctl restart "$UNIT"
     enable_linger
     wait_ready
+    save_settings
     pair
     say "On a tailnet, $ROOT/scripts/hq-linux.sh pair --tailscale publishes it over HTTPS and links to that."
     ;;
@@ -126,15 +181,15 @@ case ${1:-} in
     if ! git diff --quiet || ! git diff --cached --quiet; then
       die "the checkout has uncommitted changes."
     fi
-    before=$(git rev-parse --short HEAD)
     git fetch --quiet origin "$BRANCH"
     git merge --ff-only --quiet "origin/$BRANCH"
-    after=$(git rev-parse --short HEAD)
-    if [[ $before == "$after" ]]; then
-      say "Already at $after. To rebuild anyway: $0 rebuild"
+    head=$(git rev-parse --short HEAD)
+    if [[ $head == "$DEPLOYED" ]]; then
+      say "Already running $head. To rebuild anyway: $0 rebuild"
       exit 0
     fi
-    say "Pulled $before -> $after. To go back: git -C $ROOT reset --hard $before && $ROOT/scripts/hq-linux.sh rebuild"
+    say "Updating ${DEPLOYED:-an unknown build} -> $head."
+    [[ -n $DEPLOYED ]] && say "To go back: git -C $ROOT reset --hard $DEPLOYED && $ROOT/scripts/hq-linux.sh rebuild"
     # The merge may have changed this script; bash keeps running the version it already read.
     exec "$ROOT/scripts/hq-linux.sh" rebuild
     ;;
@@ -146,18 +201,20 @@ case ${1:-} in
     say "Restarting (running agent turns are interrupted)"
     user_ctl restart "$UNIT"
     wait_ready
+    save_settings
     ;;
   pair)
     shift
     pair "$@"
     ;;
   import-rooms)
-    bundle=${2:-}
+    bundle=$(cd "${2:-}" 2>/dev/null && pwd) || bundle=
     [[ -f $bundle/rooms.sql ]] || die "usage: $0 import-rooms <bundle dir with rooms.sql and shelves/>"
     db=$T3_HOME/userdata/statev2.sqlite
     [[ -f $db ]] || die "no database at $db yet. Run $0 install first."
     say "Stopping the server to import"
     user_ctl stop "$UNIT"
+    trap 'user_ctl start "$UNIT"' EXIT
     if [[ -d $bundle/shelves ]]; then
       mkdir -p "$T3_HOME/userdata/shelves"
       # Existing shelf files win; the rows are INSERT OR IGNORE for the same reason.
@@ -171,24 +228,26 @@ case ${1:-} in
       const count = (table) => db.prepare(`SELECT count(*) AS n FROM ${table}`).get().n;
       console.log(`${count("hq_rooms")} rooms, ${count("hq_room_documents")} shelf rows`);
     ' "$db" "$bundle/rooms.sql")
+    trap - EXIT
     user_ctl start "$UNIT"
     wait_ready
     ;;
   status)
     user_ctl status "$UNIT" --no-pager --lines 0 || true
-    curl -fsS --max-time 3 "http://127.0.0.1:$PORT/.well-known/t3/environment" && echo
+    [[ -n $DEPLOYED ]] && echo "Built from $DEPLOYED"
+    curl -fsS --max-time 3 "$(environment_url)" && echo
     ;;
   logs)
     journalctl --user -u "$UNIT" -f
     ;;
   uninstall)
     user_ctl disable --now "$UNIT" 2>/dev/null || true
-    rm -f "$UNIT_FILE"
+    rm -f "$UNIT_FILE" "$SETTINGS"
     user_ctl daemon-reload
     say "Removed $UNIT. Data in $T3_HOME is untouched."
     ;;
   *)
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
