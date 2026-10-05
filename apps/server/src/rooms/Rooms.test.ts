@@ -11,15 +11,15 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+import * as ServerConfig from "../config.ts";
 import { ThreadManagementService } from "../orchestration-v2/ThreadManagementService.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
-import { ProjectService } from "../project/ProjectService.ts";
 import * as Rooms from "./Rooms.ts";
 
-// Member threads for the shelf: one in a worktree holding cc/dex/, with a draft PR linked.
+// Deliverables an agent wrote in its worktree, and a member thread with a draft PR linked.
 const worktree = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "rooms-shelf-"));
-NodeFS.mkdirSync(NodePath.join(worktree, "cc", "dex"), { recursive: true });
-NodeFS.writeFileSync(NodePath.join(worktree, "cc", "dex", "plan.md"), "# Plan");
+NodeFS.writeFileSync(NodePath.join(worktree, "plan.md"), "# Plan");
+NodeFS.writeFileSync(NodePath.join(worktree, "legacy.md"), "# Legacy");
 const shells = new Map([
   [
     "thread-1",
@@ -54,9 +54,9 @@ const orchestrator = Layer.mergeAll(
   Layer.mock(ThreadManagementService)({
     getThreadShell: (threadId) => Effect.succeed((shells.get(threadId) ?? null) as never),
   }),
-  Layer.mock(ProjectService)({
-    listShells: () => Effect.succeed([{ id: "project-1", workspaceRoot: "/repo" }] as never),
-  }),
+  ServerConfig.layerTest(worktree, { prefix: "rooms-home-" }).pipe(
+    Layer.provide(NodeServices.layer),
+  ),
 );
 
 const testLayer = Rooms.layer.pipe(
@@ -149,26 +149,65 @@ it.effect("adds note revisions to a notes table written before they existed", ()
   ),
 );
 
-it.effect("shelves member worktree files and the PRs linked to member threads", () =>
+it.effect("shelves copies of files in the room's folder, links, and member threads' PRs", () =>
   Effect.gen(function* () {
     const rooms = yield* Rooms.Rooms;
+    const sql = yield* SqlClient.SqlClient;
     yield* rooms.create({ slug: "dex", title: "Dex", outcome: "", section: "today" });
     yield* rooms.setThread({ slug: "dex", threadId: ThreadId.make("thread-1"), member: true });
     // A member the orchestrator no longer knows is skipped, not an error.
     yield* rooms.setThread({ slug: "dex", threadId: ThreadId.make("gone"), member: true });
+    const dir = rooms.shelfDir("dex");
+    const shelve = (ref: string, extra: { title?: string; name?: string } = {}) =>
+      rooms.addDocument({ slug: "dex", ref, threadId: "thread-1", ...extra });
+
+    // The copy outlives the worktree file and keeps its own path.
+    const plan = yield* shelve(NodePath.join(worktree, "plan.md"), { title: "The plan" });
+    assert.deepStrictEqual(plan, {
+      ref: NodePath.join(dir, "plan.md"),
+      title: "The plan",
+      kind: "md",
+    });
+    NodeFS.rmSync(NodePath.join(worktree, "plan.md"));
+    // Shelving again under the same name replaces the copy and keeps the title.
+    NodeFS.writeFileSync(NodePath.join(worktree, "plan-v2.md"), "# Plan v2");
+    yield* shelve(NodePath.join(worktree, "plan-v2.md"), { name: "plan.md" });
+    assert.strictEqual(NodeFS.readFileSync(plan.ref, "utf8"), "# Plan v2");
+
+    yield* shelve("https://notion.so/dex", { title: "Spec" });
+    // Written straight into the folder: shelved without a call, titled by its path.
+    NodeFS.mkdirSync(NodePath.join(dir, "shots"), { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(dir, "shots", "home.png"), "png");
+    NodeFS.writeFileSync(NodePath.join(dir, ".DS_Store"), "");
+    // Rows from before shelves had folders name absolute paths, listed while they exist.
+    yield* sql`
+      INSERT INTO hq_room_documents (room_slug, ref, title, kind, thread_id, added_at) VALUES
+        ('dex', ${NodePath.join(worktree, "legacy.md")}, 'Legacy', 'md', NULL, '2026-10-01T00:00:00.000Z'),
+        ('dex', '/gone/old.md', 'Gone', 'md', NULL, '2026-10-01T00:00:00.000Z')
+    `;
 
     const shelf = yield* rooms.shelf("dex");
     // Newest first, so compare as a set: the dismissed PR stays off, the draft shows as draft.
     assert.sameDeepMembers(
-      shelf.map((doc) => [doc.kind, doc.title, doc.threadId, doc.prState ?? null]),
+      shelf.map((doc) => [doc.kind, doc.title, doc.ref, doc.threadId, doc.prState ?? null]),
       [
-        ["pr", "Add rooms", "thread-1", "draft"],
-        ["md", "plan.md", "thread-1", null],
+        ["pr", "Add rooms", "https://app.graphite.com/github/pr/acme/app/7", "thread-1", "draft"],
+        ["md", "The plan", plan.ref, "thread-1", null],
+        ["link", "Spec", "https://notion.so/dex", "thread-1", null],
+        ["png", "shots/home.png", NodePath.join(dir, "shots", "home.png"), null, null],
+        ["md", "Legacy", NodePath.join(worktree, "legacy.md"), null, null],
       ],
     );
-    assert.strictEqual(
-      shelf.find((doc) => doc.kind === "pr")?.ref,
-      "https://app.graphite.com/github/pr/acme/app/7",
+
+    const escape = yield* Effect.flip(
+      shelve(NodePath.join(worktree, "legacy.md"), { name: "../other/x.md" }),
     );
+    assert.include(escape.message, "not a usable shelf name");
+    const folder = yield* Effect.flip(shelve(worktree));
+    assert.include(folder.message, "is not a file");
+    const missing = yield* Effect.flip(shelve(NodePath.join(worktree, "nope.md")));
+    assert.include(missing.message, "There is no file");
+    const pr = yield* Effect.flip(shelve("https://github.com/acme/app/pull/7"));
+    assert.include(pr.message, "link_pull_request");
   }).pipe(Effect.provide(testLayer)),
 );

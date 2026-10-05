@@ -126,13 +126,16 @@ function WorkspaceImagePreview(props: {
   readonly alt: string;
   readonly workspaceMutationId: string | null;
 }) {
+  // A host image outside the workspace (a room's shelf, say) is served as media.
+  const insideWorkspace =
+    mediaFileReference(props.absolutePath, props.workspaceRoot).relativePath !== undefined;
   const resource = useMemo(
     () => ({
-      _tag: "workspace-file" as const,
+      _tag: insideWorkspace ? ("workspace-file" as const) : ("media-file" as const),
       threadId: props.threadRef.threadId,
       path: props.absolutePath,
     }),
-    [props.threadRef.threadId, props.absolutePath],
+    [insideWorkspace, props.threadRef.threadId, props.absolutePath],
   );
   const assetUrl = useAssetUrlState(props.environmentId, resource);
   const [failedUrl, setFailedUrl] = useState<string | null>(null);

@@ -14,6 +14,7 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import type { Tool } from "effect/unstable/ai";
 
+import * as ServerConfig from "../../../config.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { SqlitePersistenceMemory } from "../../../persistence/Layers/Sqlite.ts";
 import { ProjectService } from "../../../project/ProjectService.ts";
@@ -62,6 +63,9 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
           getShell: () => Effect.succeed(Option.none()),
           listShells: () => Effect.succeed([]),
         }),
+        ServerConfig.layerTest(worktree, { prefix: "rooms-toolkit-home-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
         NodeServices.layer,
       ),
     ),
@@ -109,13 +113,15 @@ describe("rooms toolkit handlers", () => {
         yield* rooms.setThread({ slug: "dex", threadId: ME, member: true });
         yield* rooms.setThread({ slug: "dex", threadId: PEER, member: true });
 
-        // Relative paths resolve against the caller's worktree.
-        expect(yield* call("shelf_add", { ref: "report.md" })).toEqual({
+        // Relative paths resolve against the caller's worktree; the shelf keeps a copy.
+        const shelved = yield* call("shelf_add", { ref: "report.md" });
+        expect(shelved).toEqual({
           room: "dex",
-          ref: `${worktree}/report.md`,
+          ref: `${rooms.shelfDir("dex")}/report.md`,
           title: "report.md",
           kind: "md",
         });
+        expect(NodeFS.readFileSync(shelved.ref, "utf8")).toBe("# Report");
         const missing = yield* call("shelf_add", { ref: "nope.md" }).pipe(Effect.flip);
         expect(missing.message).toContain("no file");
 
@@ -134,6 +140,7 @@ describe("rooms toolkit handlers", () => {
           expect.objectContaining({ threadId: PEER, you: false }),
         ]);
         expect(context.rooms[0]!.shelf.total).toBe(1);
+        expect(context.rooms[0]!.shelfDir).toBe(rooms.shelfDir("dex"));
 
         const first = yield* call("room_note", { note: "Next: merge.", basedOn: null });
         expect(first).toEqual({ room: "dex", length: 12, revision: 1 });
