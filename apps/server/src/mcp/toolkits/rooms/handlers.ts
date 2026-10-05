@@ -22,16 +22,20 @@ const make = Effect.gen(function* () {
 
   // Upstream's caller checks: reads need the orchestration capability, writes an active run that
   // this provider owns. A room_move target may be in another project: rooms span projects.
+  // Rooms default to the caller's own room, so an agent signed in from outside a thread is refused.
   const asRoomsError = (failure: { readonly message: string }) =>
     new RoomsError({ message: failure.message });
-  const reader = readCaller().pipe(
-    Effect.map(({ caller }) => ({ threadId: caller.id })),
-    Effect.mapError(asRoomsError),
-  );
-  const writer = readMutationCaller().pipe(
-    Effect.map(({ caller }) => ({ threadId: caller.id })),
-    Effect.mapError(asRoomsError),
-  );
+  const asThread = ({ caller }: { readonly caller: { readonly id: ThreadId } | undefined }) =>
+    caller === undefined
+      ? Effect.fail(
+          new RoomsError({
+            message:
+              "Room tools act as the calling T3 thread, so they need an agent running inside T3 Code.",
+          }),
+        )
+      : Effect.succeed({ threadId: caller.id });
+  const reader = readCaller().pipe(Effect.mapError(asRoomsError), Effect.flatMap(asThread));
+  const writer = readMutationCaller().pipe(Effect.mapError(asRoomsError), Effect.flatMap(asThread));
 
   const threadShell = (threadId: ThreadId) =>
     threads.getThreadShell(threadId).pipe(Effect.mapError(failWith("Could not read threads.")));

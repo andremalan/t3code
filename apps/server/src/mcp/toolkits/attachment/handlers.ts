@@ -47,7 +47,7 @@ export const AttachmentHandlersLive = AttachmentToolkit.toLayer({
     }),
   t3_thread_send_attachments: (input) =>
     Effect.gen(function* () {
-      const { projection, scope } = yield* readWritableThread(input.threadId, ["messages"]);
+      const { caller, projection } = yield* readWritableThread(input.threadId, ["messages"]);
       if (projection.thread.archivedAt !== null)
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
@@ -64,7 +64,7 @@ export const AttachmentHandlersLive = AttachmentToolkit.toLayer({
         threadId: projection.thread.id,
         commandId,
         messageId,
-        senderThreadId: scope.threadId,
+        ...(caller === undefined ? {} : { senderThreadId: caller.id }),
         text: input.message ?? "",
         attachments,
         mode: "auto",
