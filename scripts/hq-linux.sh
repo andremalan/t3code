@@ -3,6 +3,7 @@
 #
 #   scripts/hq-linux.sh install               build, install the service, start it, print a pairing link
 #   scripts/hq-linux.sh update                fast-forward to origin/$T3HQ_BRANCH, rebuild, restart
+#   scripts/hq-linux.sh rebuild               rebuild and restart whatever is checked out
 #   scripts/hq-linux.sh pair [t3 pair args]   print a fresh pairing link
 #   scripts/hq-linux.sh import-rooms <bundle> add rooms and shelves exported from another machine
 #   scripts/hq-linux.sh status | logs | uninstall
@@ -126,16 +127,22 @@ case ${1:-} in
     git fetch --quiet origin "$BRANCH"
     git merge --ff-only --quiet "origin/$BRANCH"
     after=$(git rev-parse --short HEAD)
-    if [[ $before == "$after" && ${2:-} != --force ]]; then
-      say "Already at $after. Pass --force to rebuild anyway."
+    if [[ $before == "$after" ]]; then
+      say "Already at $after. To rebuild anyway: $0 rebuild"
       exit 0
     fi
+    say "Pulled $before -> $after. To go back: git -C $ROOT reset --hard $before && $ROOT/scripts/hq-linux.sh rebuild"
+    # The merge may have changed this script; bash keeps running the version it already read.
+    exec "$ROOT/scripts/hq-linux.sh" rebuild
+    ;;
+  rebuild)
+    check_tools
+    [[ -f $UNIT_FILE ]] || die "not installed. Run: $0 install"
     build
     write_unit
     say "Restarting (running agent turns are interrupted)"
     user_ctl restart "$UNIT"
     wait_ready
-    say "Updated $before -> $after. To go back: git -C $ROOT reset --hard $before && $0 update --force"
     ;;
   pair)
     shift
@@ -178,7 +185,7 @@ case ${1:-} in
     say "Removed $UNIT. Data in $T3_HOME is untouched."
     ;;
   *)
-    sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
