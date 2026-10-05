@@ -367,7 +367,7 @@ detail also exposes an in-flight title regeneration.
 
 ### `t3_thread_send`
 
-Sends a message to any ordinary or delegated thread:
+Sends a message to an ordinary or delegated thread in the calling project:
 
 - `auto` starts an idle thread, steers a fully active turn, or queues behind a
   turn that is not yet steerable;

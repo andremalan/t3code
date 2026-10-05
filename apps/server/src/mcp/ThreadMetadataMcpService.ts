@@ -173,17 +173,9 @@ const make = Effect.gen(function* () {
     const target =
       threadId === scope.threadId
         ? parent
-        : yield* threadManagement.getThreadShell(threadId).pipe(
-            Effect.mapError((error) => failure("orchestration_error", errorMessage(error))),
-            // Look the thread up in its own project: agents reach threads across projects.
-            Effect.flatMap((shell) =>
-              shell === null
-                ? Effect.fail(failure("thread_not_found", `Thread ${threadId} was not found.`))
-                : threadManagement
-                    .getProjectThreadRecords({ projectId: shell.projectId, threadId }, [])
-                    .pipe(Effect.mapError(threadLookupFailure)),
-            ),
-          );
+        : yield* threadManagement
+            .getProjectThreadRecords({ projectId: parent.thread.projectId, threadId }, [])
+            .pipe(Effect.mapError(threadLookupFailure));
     const requestKey =
       input.clientRequestId === undefined
         ? yield* crypto.randomUUIDv4.pipe(Effect.orDie)
