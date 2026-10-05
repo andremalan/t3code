@@ -19,6 +19,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -26,14 +27,19 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 
+import * as ServerConfig from "../config.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
 
 /**
  * HQ fork: rooms group threads. The tables are created here rather than by the numbered
  * migrations so the fork never takes an id upstream will use next; the `hq_` prefix keeps them
  * clear of upstream's names. Membership is keyed on thread ids and is not cleaned up when a thread
  * is deleted: clients only show threads they know.
+ *
+ * Shelved files live in `<state dir>/shelves/<slug>/`, outside any worktree, so they outlive the
+ * threads that made them and a room moves between machines by copying its folder. Document rows
+ * name those files relative to the folder; an absolute ref is a file recorded before shelves had
+ * folders, listed while it still exists.
  */
 export class Rooms extends Context.Service<
   Rooms,
@@ -59,16 +65,21 @@ export class Rooms extends Context.Service<
       readonly threadId: string;
       readonly slug: string | null;
     }) => Effect.Effect<void, RoomsError>;
-    /** Recorded documents, files under `cc/<slug>/` in member worktrees, and member threads' PRs. */
+    /** Recorded links, the files in the room's shelf folder, and member threads' PRs. */
     readonly shelf: (slug: string) => Effect.Effect<RoomShelf, RoomsError>;
+    /** The folder holding a room's shelved files, on this server's host. */
+    readonly shelfDir: (slug: string) => string;
     /**
-     * Records a link or file on a room's shelf; pull requests are refused (link them to a thread).
-     * Adding a ref again keeps it once and only replaces the title when one is given.
+     * Records a link on a room's shelf, or copies a file (an absolute path) into the room's shelf
+     * folder as `name`, by default its file name; pull requests are refused (link them to a
+     * thread). Adding a link again keeps it once and only replaces the title when one is given;
+     * shelving a file again replaces the copy and moves it to the top.
      */
     readonly addDocument: (input: {
       readonly slug: string;
       readonly ref: string;
       readonly title?: string | undefined;
+      readonly name?: string | undefined;
       readonly threadId: string | null;
     }) => Effect.Effect<{ ref: string; title: string; kind: string }, RoomsError>;
     readonly list: Effect.Effect<RoomList, RoomsError>;
@@ -148,21 +159,26 @@ interface ShelfRow {
   readonly addedAt: string;
 }
 
-/** Files below `dir`, skipping dot paths; titled by their path inside it as HQ did. */
-const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
+/** A path inside a shelf folder as stored and shown: `/`-separated on every platform. */
+const portable = (path: Path.Path, relative: string) => relative.split(path.sep).join("/");
+
+/** Files below `dir`, skipping dot paths, titled by their path inside it. */
+const shelfFiles = (fs: FileSystem.FileSystem, path: Path.Path, dir: string) =>
   fs.readDirectory(dir, { recursive: true }).pipe(
-    Effect.flatMap((paths) =>
+    Effect.flatMap((relatives) =>
       Effect.forEach(
-        paths.filter((path) => !path.split("/").some((segment) => segment.startsWith("."))),
-        (path) =>
-          fs.stat(`${dir}/${path}`).pipe(
+        relatives.filter(
+          (relative) => !relative.split(path.sep).some((segment) => segment.startsWith(".")),
+        ),
+        (relative) =>
+          fs.stat(path.join(dir, relative)).pipe(
             Effect.map((info): ReadonlyArray<ShelfRow> =>
               info.type === "File"
                 ? [
                     {
-                      ref: `${dir}/${path}`,
-                      title: path,
-                      kind: fileKind(path),
+                      ref: path.join(dir, relative),
+                      title: portable(path, relative),
+                      kind: fileKind(relative),
                       threadId: null,
                       addedAt: Option.getOrElse(
                         Option.map(info.mtime, (mtime) => mtime.toISOString()),
@@ -178,7 +194,7 @@ const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
       ),
     ),
     Effect.map((files) => files.flat()),
-    // No `cc/<slug>` folder in this worktree.
+    // Nothing shelved yet.
     Effect.orElseSucceed((): ReadonlyArray<ShelfRow> => []),
   );
 
@@ -186,6 +202,9 @@ const fileKind = (path: string) => /\.([^./]+)$/.exec(path)?.[1]?.toLowerCase() 
 
 const PR_URL =
   /^https:\/\/(?:github\.com\/([^/]+)\/([^/]+)\/pull|app\.graphite\.(?:com|dev)\/github\/pr\/([^/]+)\/([^/]+))\/(\d+)/i;
+
+/** A shelf ref that is a URL rather than a file. */
+export const isShelfLink = (ref: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(ref);
 
 /** Pull requests reach the shelf by being linked to a room thread, never recorded on it. */
 const isPullRequestUrl = (ref: string) => PR_URL.test(ref);
@@ -255,9 +274,11 @@ const listRooms = Effect.gen(function* () {
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const config = yield* ServerConfig.ServerConfig;
   const threads = yield* ThreadManagementService.ThreadManagementService;
-  const projects = yield* ProjectService.ProjectService;
   yield* ensureSchema;
+  const shelfDir = (slug: string) => path.join(config.stateDir, "shelves", slug);
   const changes = yield* PubSub.unbounded<RoomList>();
 
   const list = listRooms.pipe(
@@ -463,31 +484,18 @@ export const make = Effect.gen(function* () {
     run(
       "Could not read the shelf.",
       Effect.gen(function* () {
-        yield* find(slug);
+        const room = yield* find(slug);
         const recorded = yield* sql<ShelfRow>`
           SELECT ref, title, kind, thread_id AS "threadId", added_at AS "addedAt"
           FROM hq_room_documents WHERE room_slug = ${slug}
         `;
-        // Member threads come from the orchestrator; PR links live on each thread.
-        const room = yield* find(slug);
+        // PR links live on each member thread.
         const shells = (yield* Effect.forEach(
           room.threadIds,
           (threadId) =>
             threads.getThreadShell(ThreadId.make(threadId)).pipe(Effect.orElseSucceed(() => null)),
           { concurrency: 8 },
         )).filter((shell) => shell !== null);
-        const projectRoots = new Map(
-          (yield* projects
-            .listShells({ projectIds: [...new Set(shells.map((shell) => shell.projectId))] })
-            .pipe(Effect.orElseSucceed(() => []))).map((project) => [
-            project.id,
-            project.workspaceRoot,
-          ]),
-        );
-        const members = shells.map((shell) => ({
-          threadId: shell.id,
-          root: shell.worktreePath ?? projectRoots.get(shell.projectId) ?? null,
-        }));
         const prs = shells.flatMap((shell) =>
           visibleThreadPullRequests(shell.pullRequests ?? []).map((link) => ({
             threadId: shell.id,
@@ -501,29 +509,22 @@ export const make = Effect.gen(function* () {
           })),
         );
 
+        const dir = shelfDir(slug);
         const docs = new Map<string, ShelfRow>();
         for (const row of recorded) {
-          if (
-            !row.ref.startsWith("/") ||
-            (yield* fs.exists(row.ref).pipe(Effect.orElseSucceed(() => false)))
-          ) {
+          if (row.kind === "link" || isShelfLink(row.ref)) {
             docs.set(row.ref, row);
+            continue;
+          }
+          const ref = path.isAbsolute(row.ref) ? row.ref : path.join(dir, row.ref);
+          if (yield* fs.exists(ref).pipe(Effect.orElseSucceed(() => false))) {
+            docs.set(ref, { ...row, ref });
           }
         }
-        const roots = new Map<string, string>();
-        for (const member of members) {
-          if (member.root && !roots.has(member.root)) roots.set(member.root, member.threadId);
-        }
-        for (const [root, threadId] of roots) {
-          for (const file of yield* shelfFiles(fs, `${root}/cc/${slug}`)) {
-            const existing = docs.get(file.ref);
-            docs.set(
-              file.ref,
-              existing
-                ? { ...existing, threadId: existing.threadId ?? threadId }
-                : { ...file, threadId },
-            );
-          }
+        // Files that arrived without shelf_add (written straight into the folder, or copied from
+        // another machine) are titled by their path.
+        for (const file of yield* shelfFiles(fs, path, dir)) {
+          if (!docs.has(file.ref)) docs.set(file.ref, file);
         }
         for (const pr of prs) {
           const ref = shelfPrRef(pr.url);
@@ -555,20 +556,61 @@ export const make = Effect.gen(function* () {
               "Link pull requests to their thread with link_pull_request instead; the shelf lists every PR linked to a thread in the room.",
           });
         }
-        const ref = input.ref;
-        const local = ref.startsWith("/");
-        const kind = local ? fileKind(ref) : "link";
-        const fallbackTitle = local ? ref.slice(ref.lastIndexOf("/") + 1) : ref;
         const addedAt = yield* nowIso;
+        if (isShelfLink(input.ref)) {
+          const [row] = yield* sql<{ title: string }>`
+            INSERT INTO hq_room_documents (room_slug, ref, title, kind, thread_id, added_at)
+            VALUES (${input.slug}, ${input.ref}, ${input.title ?? input.ref}, 'link',
+              ${input.threadId}, ${addedAt})
+            ON CONFLICT (room_slug, ref) DO UPDATE SET
+              title = COALESCE(${input.title ?? null}, title)
+            RETURNING title
+          `;
+          return { ref: input.ref, title: row?.title ?? input.ref, kind: "link" };
+        }
+
+        const source = path.resolve(input.ref);
+        const info = yield* fs
+          .stat(source)
+          .pipe(
+            Effect.mapError(() => new RoomsError({ message: `There is no file at ${source}.` })),
+          );
+        if (info.type !== "File") {
+          return yield* new RoomsError({
+            message: `${source} is not a file. Shelve the files in a folder one at a time.`,
+          });
+        }
+        const dir = shelfDir(input.slug);
+        // A file already in the folder (written there directly) is recorded where it is.
+        const inside = path.relative(dir, source);
+        const outside = inside.startsWith("..") || path.isAbsolute(inside);
+        const name = path.normalize(input.name ?? (outside ? path.basename(source) : inside));
+        if (
+          path.isAbsolute(name) ||
+          name.split(path.sep).some((segment) => segment === ".." || segment.startsWith("."))
+        ) {
+          return yield* new RoomsError({
+            message: `${input.name} is not a usable shelf name: use a relative path without dot segments, like notes/plan.md.`,
+          });
+        }
+        const target = path.join(dir, name);
+        if (target !== source) {
+          yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+          yield* fs.copyFile(source, target);
+        }
+        const kind = fileKind(name);
+        const ref = portable(path, name);
         const [row] = yield* sql<{ title: string }>`
           INSERT INTO hq_room_documents (room_slug, ref, title, kind, thread_id, added_at)
-          VALUES (${input.slug}, ${ref}, ${input.title ?? fallbackTitle}, ${kind},
-            ${input.threadId}, ${addedAt})
+          VALUES (${input.slug}, ${ref}, ${input.title ?? ref}, ${kind}, ${input.threadId},
+            ${addedAt})
           ON CONFLICT (room_slug, ref) DO UPDATE SET
-            title = COALESCE(${input.title ?? null}, title)
+            title = COALESCE(${input.title ?? null}, title),
+            thread_id = excluded.thread_id,
+            added_at = excluded.added_at
           RETURNING title
         `;
-        return { ref, title: row?.title ?? fallbackTitle, kind };
+        return { ref: target, title: row?.title ?? ref, kind };
       }),
     );
 
@@ -595,6 +637,7 @@ export const make = Effect.gen(function* () {
     setThread,
     moveThread,
     shelf,
+    shelfDir,
     addDocument,
     list,
     stream,
