@@ -12,7 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import type { Tool } from "effect/unstable/ai";
+import type { Tool } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -76,9 +76,11 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
   const toolkit = yield* RoomsToolkit.pipe(
     Effect.provide(RoomsToolkitHandlersLive.pipe(Layer.provide(Layer.succeedContext(context)))),
   );
+  // An agent T3 launched calls as its thread; one signed in from outside has no thread.
   const call = <Name extends keyof typeof RoomsToolkit.tools>(
     name: Name,
     params: Parameters<typeof toolkit.handle<Name>>[1],
+    caller: "thread" | "client" = "thread",
   ) =>
     toolkit.handle(name, params).pipe(
       Stream.unwrap,
@@ -88,9 +90,23 @@ const makeHarness = Effect.fn("makeRoomsToolkitHarness")(function* () {
       ),
       Effect.provideService(McpInvocationContext.McpInvocationContext, {
         environmentId: EnvironmentId.make("environment-1"),
-        threadId: ME,
-        providerSessionId: "provider-session-1",
-        providerInstanceId: ProviderInstanceId.make("codex"),
+        requestNamespace: "provider-session-1",
+        thread:
+          caller === "thread"
+            ? {
+                threadId: ME,
+                providerSessionId: "provider-session-1",
+                providerInstanceId: ProviderInstanceId.make("codex"),
+              }
+            : undefined,
+        client:
+          caller === "client"
+            ? {
+                sessionId: "mcp-session-1",
+                label: "Outside agent",
+                runtimeModeCeiling: "full-access",
+              }
+            : undefined,
         capabilities: new Set<McpInvocationContext.McpCapability>(["orchestration"]),
         issuedAt: 1,
       }),
@@ -157,6 +173,9 @@ describe("rooms toolkit handlers", () => {
         ]);
         const ghost = yield* call("room_move", { room: "dex", threadId: "nope" }).pipe(Effect.flip);
         expect(ghost.message).toContain("no thread");
+
+        const outsider = yield* call("room_context", { room: "dex" }, "client").pipe(Effect.flip);
+        expect(outsider.message).toContain("need an agent running inside T3 Code");
       }),
     ),
   );
