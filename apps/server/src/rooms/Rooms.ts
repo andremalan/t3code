@@ -159,21 +159,26 @@ interface ShelfRow {
   readonly addedAt: string;
 }
 
+/** A path inside a shelf folder as stored and shown: `/`-separated on every platform. */
+const portable = (path: Path.Path, relative: string) => relative.split(path.sep).join("/");
+
 /** Files below `dir`, skipping dot paths, titled by their path inside it. */
-const shelfFiles = (fs: FileSystem.FileSystem, dir: string) =>
+const shelfFiles = (fs: FileSystem.FileSystem, path: Path.Path, dir: string) =>
   fs.readDirectory(dir, { recursive: true }).pipe(
-    Effect.flatMap((paths) =>
+    Effect.flatMap((relatives) =>
       Effect.forEach(
-        paths.filter((path) => !path.split("/").some((segment) => segment.startsWith("."))),
-        (path) =>
-          fs.stat(`${dir}/${path}`).pipe(
+        relatives.filter(
+          (relative) => !relative.split(path.sep).some((segment) => segment.startsWith(".")),
+        ),
+        (relative) =>
+          fs.stat(path.join(dir, relative)).pipe(
             Effect.map((info): ReadonlyArray<ShelfRow> =>
               info.type === "File"
                 ? [
                     {
-                      ref: `${dir}/${path}`,
-                      title: path,
-                      kind: fileKind(path),
+                      ref: path.join(dir, relative),
+                      title: portable(path, relative),
+                      kind: fileKind(relative),
                       threadId: null,
                       addedAt: Option.getOrElse(
                         Option.map(info.mtime, (mtime) => mtime.toISOString()),
@@ -507,7 +512,7 @@ export const make = Effect.gen(function* () {
         const dir = shelfDir(slug);
         const docs = new Map<string, ShelfRow>();
         for (const row of recorded) {
-          if (isShelfLink(row.ref)) {
+          if (row.kind === "link" || isShelfLink(row.ref)) {
             docs.set(row.ref, row);
             continue;
           }
@@ -518,7 +523,7 @@ export const make = Effect.gen(function* () {
         }
         // Files that arrived without shelf_add (written straight into the folder, or copied from
         // another machine) are titled by their path.
-        for (const file of yield* shelfFiles(fs, dir)) {
+        for (const file of yield* shelfFiles(fs, path, dir)) {
           if (!docs.has(file.ref)) docs.set(file.ref, file);
         }
         for (const pr of prs) {
@@ -578,9 +583,8 @@ export const make = Effect.gen(function* () {
         const dir = shelfDir(input.slug);
         // A file already in the folder (written there directly) is recorded where it is.
         const inside = path.relative(dir, source);
-        const name = path.normalize(
-          input.name ?? (inside.startsWith("..") ? path.basename(source) : inside),
-        );
+        const outside = inside.startsWith("..") || path.isAbsolute(inside);
+        const name = path.normalize(input.name ?? (outside ? path.basename(source) : inside));
         if (
           path.isAbsolute(name) ||
           name.split(path.sep).some((segment) => segment === ".." || segment.startsWith("."))
@@ -595,9 +599,10 @@ export const make = Effect.gen(function* () {
           yield* fs.copyFile(source, target);
         }
         const kind = fileKind(name);
+        const ref = portable(path, name);
         const [row] = yield* sql<{ title: string }>`
           INSERT INTO hq_room_documents (room_slug, ref, title, kind, thread_id, added_at)
-          VALUES (${input.slug}, ${name}, ${input.title ?? name}, ${kind}, ${input.threadId},
+          VALUES (${input.slug}, ${ref}, ${input.title ?? ref}, ${kind}, ${input.threadId},
             ${addedAt})
           ON CONFLICT (room_slug, ref) DO UPDATE SET
             title = COALESCE(${input.title ?? null}, title),
@@ -605,7 +610,7 @@ export const make = Effect.gen(function* () {
             added_at = excluded.added_at
           RETURNING title
         `;
-        return { ref: target, title: row?.title ?? name, kind };
+        return { ref: target, title: row?.title ?? ref, kind };
       }),
     );
 

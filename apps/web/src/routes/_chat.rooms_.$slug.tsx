@@ -204,9 +204,11 @@ function RoomRouteView() {
   const threadRefs = useMemo(() => {
     const members = room ? hqRoomThreads(room, threads, { includeSettled: true }) : [];
     // A room without threads (one carried over from another machine, say) still opens its files.
-    return (members.length > 0 ? members : hqRoomThreads(null, threads).slice(0, 1)).map(
-      (thread) => ({ environmentId: thread.environmentId, threadId: thread.id }),
-    );
+    const openers =
+      members.length > 0
+        ? members
+        : hqRoomThreads(null, threads, { includeSettled: true }).slice(0, 1);
+    return openers.map((thread) => ({ environmentId: thread.environmentId, threadId: thread.id }));
   }, [room, threads]);
 
   useEffect(() => selectHqRoom(slug), [slug]);
