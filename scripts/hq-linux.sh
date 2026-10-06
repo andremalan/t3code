@@ -11,7 +11,8 @@
 # Upstream's `t3 service install` only runs downloaded releases, so this keeps its own unit,
 # t3code-hq.service, and leaves t3code.service alone. Uninstalling keeps all data.
 #
-# Settings: T3HQ_PORT (3773), T3HQ_HOST (all interfaces), T3HQ_BRANCH (main), T3CODE_HOME (~/.t3).
+# Settings: T3HQ_PORT (3773), T3HQ_HOST (127.0.0.1; 0.0.0.0 for the LAN), T3HQ_BRANCH (main),
+# T3CODE_HOME (~/.t3).
 # Install remembers them; set one again on a later command to change it.
 # Needs git, a C toolchain and python3 (native modules), and vp (https://vite.plus) for Node and pnpm.
 set -euo pipefail
@@ -247,7 +248,7 @@ case ${1:-} in
     say "Removed $UNIT. Data in $T3_HOME is untouched."
     ;;
   *)
-    sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit 1
     ;;
 esac
