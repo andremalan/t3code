@@ -72,12 +72,14 @@ Enable lingering with `loginctl enable-linger "$USER"` if the service should run
 Stop with `systemctl --user stop drebot.service`; inspect status with `systemctl --user status drebot.service`.
 On migration, stop the Mac listener before starting Linux. Use fresh bridge state unless the
 corresponding T3 thread IDs were also migrated; copying mappings alone cannot restore their threads.
-Fresh state and newly added channels begin intake when the listener starts seeing them. Older
+Fresh state and added or re-enabled routes begin intake when the listener starts seeing them. Older
 requests and messages sent during a migration gap are not recovered automatically; ask Drebot again.
 This service supervises transport; it does not provide coworker worker isolation.
 
-Shutdown cancels recovery reads and rate-limit waits, then drains accepted work. Linux locks record
-the boot identity so a stale PID from a previous boot can be reclaimed. A legacy lock without that
+Shutdown, including terminal close, cancels recovery reads and rate-limit waits, then drains accepted
+work. Draining slow T3 commands or Slack writes can exceed the unit's stop timeout; inspect interrupted
+delivery status after restart. Linux locks record the boot identity so a stale PID from a previous
+boot can be reclaimed. A legacy lock without that
 identity can still block startup if its PID was reused. If startup reports an existing or unverified
 lock owner, stop supervision, inspect that process and the state directory, and archive the lock only
 after verifying that no listener owns it. An unverified live lock is preserved.
@@ -122,7 +124,9 @@ Channel routes use the same shape, with `listen: "mentions"` or `listen: "all"`.
 thread accepts later replies without another mention. This personal-environment adapter admits
 only `ownerUserId`; every `allowedUsers` entry must match it. A broad or coworker allowlist fails
 startup. Coworker replies in an existing owner thread also fail admission.
-Restart the listener after configuration changes. Current route authorization also applies to
+Restart the listener after disabling or re-enabling intake and other configuration changes. Disabling
+a route discards its recovery progress, so requests posted while it was disabled are not replayed
+when it returns. Active routes retain outage recovery. Current route authorization also applies to
 existing mapped conversations; their project and model binding stays fixed. Slack Connect events
 and events identifying a sender from another team are refused.
 

@@ -442,7 +442,11 @@ async function watch(config, store) {
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
+  process.once("SIGHUP", stop);
   try {
+    store.forgetUnrouted((channel) =>
+      channel.startsWith("D") ? config.allowDms : !!config.channels?.[channel],
+    );
     for (const channel of Object.keys(config.channels || {}))
       store.initializeRecovery(channel, config.activatedAt, startedAt);
     const auth = await slackApi("auth.test", {}, config.botToken);
@@ -461,6 +465,7 @@ async function watch(config, store) {
     await Promise.allSettled(pending);
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
+    process.removeListener("SIGHUP", stop);
     release();
     store.close();
   }

@@ -545,6 +545,79 @@ NodeTest.test(
   },
 );
 
+NodeTest.test(
+  "re-enabled routes reject disabled-period requests while preserving mappings and active recovery",
+  async (t) => {
+    const store = fixture(t);
+    t.mock.method(Date, "now", () => 1001000);
+    for (const channel of ["C123", "CRETURN", "D123", "DRETURN"]) {
+      store.initializeRecovery(channel, config.activatedAt, "100");
+      store.health(`recovery:root:${channel}:2`, "deleted root");
+      store.health(`recovery:full:${channel}`, "failed sweep");
+    }
+    store.health("recovery:CRETURN", "legacy sweep");
+    store.health("thread:keep", "unrelated failure");
+    store.setCursor("other:keep", "42");
+    const mappings = ["CRETURN", "DRETURN"].map((channel) =>
+      store.register({ id: channel, channel, rootTs: "2", startTs: "2", route }),
+    );
+    store.forgetUnrouted((channel) => channel.startsWith("D") || channel === "C123");
+    NodeAssert.equal(store.cursor("history:CRETURN"), undefined);
+    NodeAssert.equal(store.cursor("history:DRETURN"), "100");
+    store.forgetUnrouted((channel) => channel === "C123");
+    for (const kind of ["baseline", "history", "mapped"]) {
+      NodeAssert.equal(store.cursor(`${kind}:C123`), "100");
+      NodeAssert.equal(store.cursor(`${kind}:CRETURN`), undefined);
+      NodeAssert.equal(store.cursor(`${kind}:DRETURN`), undefined);
+    }
+    NodeAssert.equal(store.cursor("other:keep"), "42");
+    NodeAssert.deepEqual(
+      store.db
+        .prepare("SELECT id FROM health ORDER BY id")
+        .all()
+        .map((row) => row.id),
+      ["recovery:full:C123", "recovery:root:C123:2", "thread:keep"],
+    );
+    const cfg = { ...config, channels: { C123: route, CRETURN: route } };
+    await catchUp(
+      cfg,
+      store,
+      (payload) => {
+        const routed = routeEvent(payload, cfg, store);
+        if (routed) store.record(routed.event, routed.route, cfg.teamId);
+      },
+      async (method, { channel }) => {
+        if (method === "conversations.list")
+          return { channels: [{ id: "DRETURN", user: cfg.ownerUserId }] };
+        if (channel === "C123") return { messages: [] };
+        return {
+          messages:
+            method === "conversations.history"
+              ? [
+                  { ...event, channel, ts: "2", reply_count: 2, latest_reply: "1000.2" },
+                  { ...event, channel, ts: "500" },
+                  { ...event, channel, ts: "1000.1" },
+                ]
+              : [
+                  { ...event, channel, ts: "2" },
+                  { ...event, channel, ts: "600", thread_ts: "2" },
+                  { ...event, channel, ts: "1000.2", thread_ts: "2" },
+                ],
+        };
+      },
+      { startedAt: "1000" },
+    );
+    NodeAssert.deepEqual(
+      store.pending().map((row) => JSON.parse(row.event).ts),
+      ["1000.1", "1000.2", "1000.1", "1000.2"],
+    );
+    for (const mapping of mappings) {
+      NodeAssert.equal(store.bySlack(mapping.channel, "2").thread_id, mapping.thread_id);
+      NodeAssert.equal(store.cursor(`baseline:${mapping.channel}`), "1000");
+    }
+  },
+);
+
 NodeTest.test("a failed first read persists its baseline across a restarted store", async (t) => {
   const store = fixture(t);
   let now = 1000;

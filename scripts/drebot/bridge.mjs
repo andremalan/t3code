@@ -120,6 +120,30 @@ export class BridgeStore {
   cursor(id, fallback) {
     return this.db.prepare("SELECT ts FROM cursors WHERE id=?").get(id)?.ts || fallback;
   }
+  /** Drop disabled routes' recovery progress so re-enabling cannot revive refused requests. */
+  forgetUnrouted(isRouted) {
+    const channels = new Set(
+      this.db
+        .prepare("SELECT id FROM cursors")
+        .all()
+        .filter((row) => /^(baseline|history|mapped):/.test(row.id))
+        .map((row) => row.id.split(":")[1]),
+    );
+    for (const channel of channels) {
+      if (isRouted(channel)) continue;
+      this.db
+        .prepare("DELETE FROM cursors WHERE id IN (?,?,?)")
+        .run(`baseline:${channel}`, `history:${channel}`, `mapped:${channel}`);
+      this.db
+        .prepare("DELETE FROM health WHERE id IN (?,?,?) OR id LIKE ?")
+        .run(
+          `recovery:${channel}`,
+          `recovery:fast:${channel}`,
+          `recovery:full:${channel}`,
+          `recovery:root:${channel}:%`,
+        );
+    }
+  }
   /** Persist a first-seen boundary while retaining saved recovery progress. */
   initializeRecovery(channel, activatedAt, startedAt = String(Date.now() / 1000)) {
     const history = this.cursor(`history:${channel}`);
