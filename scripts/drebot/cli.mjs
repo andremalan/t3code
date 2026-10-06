@@ -1,259 +1,503 @@
-import { randomUUID } from 'node:crypto'
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-import { CONFIG, STATE } from './paths.mjs'
-import { t3Dispatch, t3Token, t3Pair } from './t3.mjs'
-import { BridgeStore, collectReplies, dispatchPending, flushPosts, routeEvent } from './bridge.mjs'
-import { slackApi, slackPages } from './slack.mjs'
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import { CONFIG, STATE } from "./paths.mjs";
+import { t3Dispatch, t3Token, t3Pair } from "./t3.mjs";
+import { BridgeStore, collectReplies, dispatchPending, flushPosts, routeEvent } from "./bridge.mjs";
+import { slackApi, slackPages } from "./slack.mjs";
 
-const CONFIG_FILE = join(CONFIG, 'drebot.json')
-const DB_FILE = join(STATE, 'drebot.sqlite')
-const LOCK_FILE = join(STATE, 'drebot.lock')
-const RUNTIME_FILE = join(STATE, 'drebot-runtime.json')
-const quote = value => `'${String(value).replaceAll("'", "'\\''")}'`
-const CLI = `${quote(process.execPath)} ${quote(fileURLToPath(new URL('./cli.mjs', import.meta.url)))}`
-const log = message => console.log(`${new Date().toISOString()} ${message}`)
+const CONFIG_FILE = NodePath.join(CONFIG, "drebot.json");
+const DB_FILE = NodePath.join(STATE, "drebot.sqlite");
+const LOCK_FILE = NodePath.join(STATE, "drebot.lock");
+const RUNTIME_FILE = NodePath.join(STATE, "drebot-runtime.json");
+const quote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+const CLI = `${quote(process.execPath)} ${quote(NodeURL.fileURLToPath(new URL("./cli.mjs", import.meta.url)))}`;
+const log = (message) => console.log(`${new Date().toISOString()} ${message}`);
 
 export function readDrebotConfig(file = CONFIG_FILE) {
-  const config = JSON.parse(readFileSync(file, 'utf8'))
-  if (!/^T[A-Z0-9]+$/.test(config.teamId || '') || !/^U[A-Z0-9]+$/.test(config.botUserId || '') ||
-      !config.botToken?.startsWith('xoxb-') || !config.appToken?.startsWith('xapp-') || !Number(config.activatedAt))
-    throw new Error(`Invalid Drebot identity or tokens in ${file}`)
-  if (!/^U[A-Z0-9]+$/.test(config.ownerUserId || '') || !Array.isArray(config.allowedUsers) || !config.allowedUsers.length)
-    throw new Error('Drebot requires an ownerUserId and an explicit allowedUsers list')
-  for (const route of [...(config.allowDms ? [config.defaultRoute] : []), ...Object.values(config.channels || {})]) {
-    const effort = route?.modelSelection?.options?.find(option => ['effort', 'reasoningEffort', 'reasoning'].includes(option.id))
-    const allowed = route?.allowedUsers || config.allowedUsers
-    if (!route?.projectId || !route.modelSelection?.instanceId || !route.modelSelection?.model || !effort?.value ||
-        !route.workspaceStrategy?.type || !['approval-required', 'auto-accept-edits', 'auto', 'full-access'].includes(route.runtimeMode) ||
-        !Array.isArray(allowed) || !allowed.length)
-      throw new Error(`Each Drebot route needs explicit project, model, effort, workspace, runtimeMode, and allowedUsers in ${file}`)
+  const config = JSON.parse(NodeFS.readFileSync(file, "utf8"));
+  if (
+    !/^T[A-Z0-9]+$/.test(config.teamId || "") ||
+    !/^U[A-Z0-9]+$/.test(config.botUserId || "") ||
+    !config.botToken?.startsWith("xoxb-") ||
+    !config.appToken?.startsWith("xapp-") ||
+    !Number(config.activatedAt)
+  )
+    throw new Error(`Invalid Drebot identity or tokens in ${file}`);
+  if (
+    !/^U[A-Z0-9]+$/.test(config.ownerUserId || "") ||
+    !Array.isArray(config.allowedUsers) ||
+    !config.allowedUsers.length
+  )
+    throw new Error("Drebot requires an ownerUserId and an explicit allowedUsers list");
+  for (const route of [
+    ...(config.allowDms ? [config.defaultRoute] : []),
+    ...Object.values(config.channels || {}),
+  ]) {
+    const effort = route?.modelSelection?.options?.find((option) =>
+      ["effort", "reasoningEffort", "reasoning"].includes(option.id),
+    );
+    const allowed = route?.allowedUsers || config.allowedUsers;
+    if (
+      !route?.projectId ||
+      !route.modelSelection?.instanceId ||
+      !route.modelSelection?.model ||
+      !effort?.value ||
+      !route.workspaceStrategy?.type ||
+      !["approval-required", "auto-accept-edits", "auto", "full-access"].includes(
+        route.runtimeMode,
+      ) ||
+      !Array.isArray(allowed) ||
+      !allowed.length
+    )
+      throw new Error(
+        `Each Drebot route needs explicit project, model, effort, workspace, runtimeMode, and allowedUsers in ${file}`,
+      );
   }
-  return config
+  return config;
 }
 
 function takeLock() {
-  const id = randomUUID()
-  if (existsSync(LOCK_FILE)) {
-    const previous = JSON.parse(readFileSync(LOCK_FILE, 'utf8'))
-    let alive = false
-    try { process.kill(previous.pid, 0); alive = true } catch (error) { if (error.code !== 'ESRCH') throw error }
-    if (alive) throw new Error(`Drebot is already running as PID ${previous.pid}`)
-    unlinkSync(LOCK_FILE)
+  const id = NodeCrypto.randomUUID();
+  if (NodeFS.existsSync(LOCK_FILE)) {
+    const previous = JSON.parse(NodeFS.readFileSync(LOCK_FILE, "utf8"));
+    let alive = false;
+    try {
+      process.kill(previous.pid, 0);
+      alive = true;
+    } catch (error) {
+      if (error.code !== "ESRCH") throw error;
+    }
+    if (alive) throw new Error(`Drebot is already running as PID ${previous.pid}`);
+    NodeFS.unlinkSync(LOCK_FILE);
   }
-  const fd = openSync(LOCK_FILE, 'wx', 0o600)
-  writeFileSync(fd, JSON.stringify({ id, pid: process.pid }))
-  closeSync(fd)
-  return () => { if (JSON.parse(readFileSync(LOCK_FILE, 'utf8')).id === id) unlinkSync(LOCK_FILE) }
+  const fd = NodeFS.openSync(LOCK_FILE, "wx", 0o600);
+  NodeFS.writeFileSync(fd, JSON.stringify({ id, pid: process.pid }));
+  NodeFS.closeSync(fd);
+  return () => {
+    if (JSON.parse(NodeFS.readFileSync(LOCK_FILE, "utf8")).id === id) NodeFS.unlinkSync(LOCK_FILE);
+  };
 }
 
 export async function catchUp(config, store, ingest, api = slackApi) {
-  const channels = new Set(Object.keys(config.channels || {}))
+  const channels = new Set(Object.keys(config.channels || {}));
   if (config.allowDms) {
     try {
-      for (const channel of await slackPages('conversations.list', { types: 'im', exclude_archived: true }, config.botToken, api)) channels.add(channel.id)
-      store.health('recovery:discovery', '')
-    } catch (error) { store.health('recovery:discovery', error.message) }
-    for (const row of store.conversations()) if (row.channel.startsWith('D')) channels.add(row.channel)
+      for (const channel of await slackPages(
+        "conversations.list",
+        { types: "im", exclude_archived: true },
+        config.botToken,
+        api,
+      ))
+        channels.add(channel.id);
+      store.health("recovery:discovery", "");
+    } catch (error) {
+      store.health("recovery:discovery", error.message);
+    }
+    for (const row of store.conversations())
+      if (row.channel.startsWith("D")) channels.add(row.channel);
   }
-  const failures = []
+  const failures = [];
   for (const channel of channels) {
     try {
-    const since = store.cursor(`history:${channel}`, config.activatedAt)
-    const through = String(Date.now() / 1000)
-    const window = Number(config.recoveryWindowSeconds) || 86400
-    const oldest = String(Math.max(Number(config.activatedAt), Math.min(Number(since), Number(through) - window)))
-    const messages = await slackPages('conversations.history', { channel, oldest, latest: through }, config.botToken, api)
-    const roots = new Set(messages.filter(message => message.reply_count && Number(message.latest_reply || through) >= Number(since)).map(message => message.ts))
-    for (const message of messages.filter(row => Number(row.ts) >= Number(since)).sort((a,b) => Number(a.ts)-Number(b.ts)))
-      ingest({ team_id: config.teamId, event: { ...message, channel, channel_type: channel.startsWith('D') ? 'im' : 'channel' } })
-    for (const conversation of store.conversations().filter(row => row.channel === channel)) {
-      const last = store.db.prepare('SELECT event FROM inbox WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1').get(conversation.id)
-      if (conversation.root_ts && (conversation.watching || Number(last ? JSON.parse(last.event).ts : conversation.start_ts) > Number(through) - window)) roots.add(conversation.root_ts)
+      const since = store.cursor(`history:${channel}`, config.activatedAt);
+      const through = String(Date.now() / 1000);
+      const window = Number(config.recoveryWindowSeconds) || 86400;
+      const mappedWindow = Number(config.mappedRecoveryWindowSeconds) || 30 * 86400;
+      const oldest = String(
+        Math.max(Number(config.activatedAt), Math.min(Number(since), Number(through) - window)),
+      );
+      const messages = await slackPages(
+        "conversations.history",
+        { channel, oldest, latest: through },
+        config.botToken,
+        api,
+      );
+      const roots = new Set(
+        messages
+          .filter(
+            (message) =>
+              message.reply_count && Number(message.latest_reply || through) >= Number(since),
+          )
+          .map((message) => message.ts),
+      );
+      for (const message of messages
+        .filter((row) => Number(row.ts) >= Number(since))
+        .sort((a, b) => Number(a.ts) - Number(b.ts)))
+        ingest({
+          team_id: config.teamId,
+          event: { ...message, channel, channel_type: channel.startsWith("D") ? "im" : "channel" },
+        });
+      for (const conversation of store.conversations().filter((row) => row.channel === channel)) {
+        const last = store.db
+          .prepare("SELECT event FROM inbox WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1")
+          .get(conversation.id);
+        if (
+          conversation.root_ts &&
+          (conversation.watching ||
+            Number(last ? JSON.parse(last.event).ts : conversation.start_ts) >
+              Number(through) - mappedWindow)
+        )
+          roots.add(conversation.root_ts);
+      }
+      for (const root of roots) {
+        const linked = store.bySlack(channel, root);
+        const replies = await slackPages(
+          "conversations.replies",
+          {
+            channel,
+            ts: root,
+            oldest: String(Math.max(Number(since), Number(linked?.start_ts || 0))),
+            latest: through,
+          },
+          config.botToken,
+          api,
+        );
+        for (const reply of replies.sort((a, b) => Number(a.ts) - Number(b.ts)))
+          ingest({
+            team_id: config.teamId,
+            event: {
+              ...reply,
+              thread_ts: root,
+              channel,
+              channel_type: channel.startsWith("D") ? "im" : "channel",
+            },
+          });
+      }
+      store.setCursor(`history:${channel}`, through);
+      store.health(`recovery:${channel}`, "");
+    } catch (error) {
+      store.health(`recovery:${channel}`, error.message);
+      failures.push({ channel, error: error.message });
     }
-    for (const root of roots) {
-      const linked = store.bySlack(channel, root)
-      const replies = await slackPages('conversations.replies', { channel, ts: root, oldest: String(Math.max(Number(since), Number(linked?.start_ts || 0))), latest: through }, config.botToken, api)
-      for (const reply of replies.sort((a,b) => Number(a.ts)-Number(b.ts)))
-        ingest({ team_id: config.teamId, event: { ...reply, thread_ts: root, channel, channel_type: channel.startsWith('D') ? 'im' : 'channel' } })
-    }
-    store.setCursor(`history:${channel}`, through)
-    store.health(`recovery:${channel}`, '')
-    } catch (error) { store.health(`recovery:${channel}`, error.message); failures.push({ channel, error: error.message }) }
   }
-  return failures
+  return failures;
 }
 
 export async function bridgeTick(config, store, rpc, api, cli = CLI, logger = log) {
-  await dispatchPending(store, rpc, cli, logger, config.ownerUserId, config.botUserId)
-  for (const conversation of store.conversations().filter(row => row.launched && row.watching)) {
+  await dispatchPending(store, rpc, cli, logger, config.ownerUserId, config.botUserId);
+  for (const conversation of store.conversations().filter((row) => row.launched && row.watching)) {
     try {
-      const projection = await rpc('orchestration.getThreadProjection', { threadId: conversation.thread_id })
-      store.health(`thread:${conversation.thread_id}`, '')
-      collectReplies(store, conversation, projection)
-    } catch (error) { store.health(`thread:${conversation.thread_id}`, error.message); logger(`Thread check failed: ${conversation.thread_id}: ${error.message}`) }
+      const projection = await rpc("orchestration.getThreadProjection", {
+        threadId: conversation.thread_id,
+      });
+      store.health(`thread:${conversation.thread_id}`, "");
+      collectReplies(store, conversation, projection);
+    } catch (error) {
+      store.health(`thread:${conversation.thread_id}`, error.message);
+      logger(`Thread check failed: ${conversation.thread_id}: ${error.message}`);
+    }
   }
-  await flushPosts(store, api, config, logger)
+  await flushPosts(store, api, config, logger);
 }
 
 async function watch(config, store) {
-  const release = takeLock()
-  let socket, timer, reconnectTimer, stopping = false, busy = false, backoff = 1000, connected = false, recovering = false, recoveredAt = 0
-  const pending = new Set()
-  const track = promise => {
-    pending.add(promise)
-    promise.then(() => pending.delete(promise), () => pending.delete(promise))
-    return promise
-  }
-  let stopped
-  const stopRequested = new Promise(resolve => { stopped = resolve })
-  store.recoverInterruptedSends()
-  const runtime = () => writeFileSync(RUNTIME_FILE, JSON.stringify({ pid: process.pid, connected, updatedAt: new Date().toISOString(), source: fileURLToPath(import.meta.url) })+'\n', { mode: 0o600 })
-  const ingest = payload => {
-    const routed = routeEvent(payload, config, store)
-    if (!routed) return
-    const result = store.record(routed.event, routed.route, config.teamId)
-    if (result.inserted) log(`Recorded Slack message ${result.eventId}`)
-  }
+  const release = takeLock();
+  let socket,
+    timer,
+    reconnectTimer,
+    stopping = false,
+    busy = false,
+    backoff = 1000,
+    connected = false,
+    recovering = false,
+    recoveredAt = 0;
+  const pending = new Set();
+  const track = (promise) => {
+    pending.add(promise);
+    promise.then(
+      () => pending.delete(promise),
+      () => pending.delete(promise),
+    );
+    return promise;
+  };
+  let stopped;
+  const stopRequested = new Promise((resolve) => {
+    stopped = resolve;
+  });
+  store.recoverInterruptedSends();
+  const runtime = () =>
+    NodeFS.writeFileSync(
+      RUNTIME_FILE,
+      JSON.stringify({
+        pid: process.pid,
+        connected,
+        updatedAt: new Date().toISOString(),
+        source: NodeURL.fileURLToPath(import.meta.url),
+      }) + "\n",
+      { mode: 0o600 },
+    );
+  const ingest = (payload) => {
+    const routed = routeEvent(payload, config, store);
+    if (!routed) return;
+    const result = store.record(routed.event, routed.route, config.teamId);
+    if (result.inserted) log(`Recorded Slack message ${result.eventId}`);
+  };
   const recover = () => {
-    if (recovering || stopping) return
-    recovering = true
-    track(catchUp(config, store, ingest)).catch(error => store.health('recovery', error.message))
-      .finally(() => { recovering = false; recoveredAt = Date.now() })
-  }
-  const tick = () => track((async () => {
-    if (busy || stopping) return
-    busy = true
-    try {
-      await bridgeTick(config, store, t3Dispatch, slackApi)
-      if (Date.now() - recoveredAt > 60000) recover()
-      runtime()
-    } catch (error) { log(`Bridge check failed: ${error.message}`) }
-    finally { busy = false; if (!stopping) timer = setTimeout(tick, 3000) }
-  })())
-  const connect = () => track((async () => {
-    if (stopping) return
-    try {
-      const result = await slackApi('apps.connections.open', {}, config.appToken)
-      if (stopping) return
-      const connection = new WebSocket(result.url)
-      socket = connection
-      connection.addEventListener('open', () => {
-        if (stopping) { connection.close(); return }
-        connected = true; backoff = 1000; runtime(); log('Drebot Socket Mode connected')
-        recover()
-      })
-      connection.addEventListener('message', ({ data }) => {
-        let envelope
-        try { envelope = JSON.parse(data) } catch { return }
+    if (recovering || stopping) return;
+    recovering = true;
+    track(catchUp(config, store, ingest))
+      .catch((error) => store.health("recovery", error.message))
+      .finally(() => {
+        recovering = false;
+        recoveredAt = Date.now();
+      });
+  };
+  const tick = () =>
+    track(
+      (async () => {
+        if (busy || stopping) return;
+        busy = true;
         try {
-          if (envelope.type === 'events_api') ingest(envelope.payload)
-          // Persist before acknowledgment so an unwritable inbox remains eligible for redelivery.
-          if (envelope.envelope_id) connection.send(JSON.stringify({ envelope_id: envelope.envelope_id }))
-          if (envelope.type === 'disconnect') connection.close()
-        } catch (error) { log(`Slack event was not acknowledged: ${error.message}`) }
-      })
-      connection.addEventListener('error', () => connection.close())
-      connection.addEventListener('close', () => { if (socket === connection) { connected = false; runtime(); reconnect() } })
-    } catch (error) { log(`Socket Mode connection failed: ${error.message}`); reconnect() }
-  })())
+          await bridgeTick(config, store, t3Dispatch, slackApi);
+          if (Date.now() - recoveredAt > 60000) recover();
+          runtime();
+        } catch (error) {
+          log(`Bridge check failed: ${error.message}`);
+        } finally {
+          busy = false;
+          if (!stopping) timer = setTimeout(tick, 3000);
+        }
+      })(),
+    );
+  const connect = () =>
+    track(
+      (async () => {
+        if (stopping) return;
+        try {
+          const result = await slackApi("apps.connections.open", {}, config.appToken);
+          if (stopping) return;
+          const connection = new WebSocket(result.url);
+          socket = connection;
+          connection.addEventListener("open", () => {
+            if (stopping) {
+              connection.close();
+              return;
+            }
+            connected = true;
+            backoff = 1000;
+            runtime();
+            log("Drebot Socket Mode connected");
+            recover();
+          });
+          connection.addEventListener("message", ({ data }) => {
+            let envelope;
+            try {
+              envelope = JSON.parse(data);
+            } catch {
+              return;
+            }
+            try {
+              if (envelope.type === "events_api") ingest(envelope.payload);
+              // Persist before acknowledgment so an unwritable inbox remains eligible for redelivery.
+              if (envelope.envelope_id)
+                connection.send(JSON.stringify({ envelope_id: envelope.envelope_id }));
+              if (envelope.type === "disconnect") connection.close();
+            } catch (error) {
+              log(`Slack event was not acknowledged: ${error.message}`);
+            }
+          });
+          connection.addEventListener("error", () => connection.close());
+          connection.addEventListener("close", () => {
+            if (socket === connection) {
+              connected = false;
+              runtime();
+              reconnect();
+            }
+          });
+        } catch (error) {
+          log(`Socket Mode connection failed: ${error.message}`);
+          reconnect();
+        }
+      })(),
+    );
   const reconnect = () => {
-    if (stopping) return
-    clearTimeout(reconnectTimer)
-    reconnectTimer = setTimeout(connect, backoff)
-    backoff = Math.min(60000, backoff * 2)
-  }
+    if (stopping) return;
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, backoff);
+    backoff = Math.min(60000, backoff * 2);
+  };
   const stop = () => {
-    if (stopping) return
-    stopping = true; clearTimeout(timer); clearTimeout(reconnectTimer); socket?.close(); connected = false; runtime()
-    stopped()
-  }
-  process.once('SIGINT', stop)
-  process.once('SIGTERM', stop)
+    if (stopping) return;
+    stopping = true;
+    clearTimeout(timer);
+    clearTimeout(reconnectTimer);
+    socket?.close();
+    connected = false;
+    runtime();
+    stopped();
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
   try {
-    const auth = await slackApi('auth.test', {}, config.botToken)
-    if (auth.team_id !== config.teamId || auth.user_id !== config.botUserId) throw new Error('Slack bot identity does not match Drebot configuration')
-    await t3Dispatch('server.getConfig', {})
-    log(`Drebot ready as ${auth.user_id}; routing ${Object.keys(config.channels || {}).length} channel(s) and ${config.allowDms ? 'DMs' : 'no DMs'}`)
-    await connect()
-    await tick()
-    await stopRequested
+    const auth = await slackApi("auth.test", {}, config.botToken);
+    if (auth.team_id !== config.teamId || auth.user_id !== config.botUserId)
+      throw new Error("Slack bot identity does not match Drebot configuration");
+    await t3Dispatch("server.getConfig", {});
+    log(
+      `Drebot ready as ${auth.user_id}; routing ${Object.keys(config.channels || {}).length} channel(s) and ${config.allowDms ? "DMs" : "no DMs"}`,
+    );
+    await connect();
+    await tick();
+    await stopRequested;
   } finally {
-    stop()
+    stop();
     // Keep the lock and SQLite open until every accepted event and in-flight send has finished.
-    await Promise.allSettled([...pending])
-    process.removeListener('SIGINT', stop)
-    process.removeListener('SIGTERM', stop)
-    release()
-    store.close()
+    await Promise.allSettled(pending);
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    release();
+    store.close();
   }
 }
 
-function flag(args, name) { const index = args.indexOf(name); return index < 0 ? '' : args[index + 1] || '' }
+function flag(args, name) {
+  const index = args.indexOf(name);
+  return index < 0 ? "" : args[index + 1] || "";
+}
 
 export async function runDrebot(args) {
-  const [command = 'status'] = args
-  if (command === '--help' || command === 'help') {
-    console.log('drebot watch | status | pair <link> | reply --thread-id <T3-id> --file <text> | send --channel <id> [--thread-ts <ts>] [--t3-thread <id>] --file <text> | retry --event <id>')
-    return
+  const [command = "status"] = args;
+  if (command === "--help" || command === "help") {
+    console.log(
+      "drebot watch | status | pair <link> | reply --thread-id <T3-id> --file <text> | send --channel <id> [--thread-ts <ts>] [--t3-thread <id>] --file <text> | retry --event <id>",
+    );
+    return;
   }
-  if (command === 'pair') {
-    const result = await t3Pair(args[1])
-    if (!result.ok) throw new Error(result.why)
-    console.log(JSON.stringify(result))
-    return
+  if (command === "pair") {
+    const result = await t3Pair(args[1]);
+    if (!result.ok) throw new Error(result.why);
+    console.log(JSON.stringify(result));
+    return;
   }
-  const config = readDrebotConfig()
-  const store = new BridgeStore(DB_FILE)
+  const config = readDrebotConfig();
+  const store = new BridgeStore(DB_FILE);
   try {
-    if (command === 'watch') { await watch(config, store); return }
-    if (command === 'status') {
-      const auth = await slackApi('auth.test', {}, config.botToken)
-      let runtime = null
-      try { runtime = JSON.parse(readFileSync(RUNTIME_FILE, 'utf8')); process.kill(runtime.pid, 0) } catch { runtime = null }
-      const token = t3Token()
-      let t3Connected = false, t3Error
-      try { await t3Dispatch('server.getConfig', {}); t3Connected = true } catch (error) { t3Error = error.message }
-      console.log(JSON.stringify({ appId: config.appId, botUserId: auth.user_id, teamId: auth.team_id, runtime,
-        t3Credential: { configured: !!token, connected: t3Connected, error: t3Error, expired: token?.expired, expiresAt: token?.expiresAt },
-        channels: Object.keys(config.channels || {}), conversations: store.conversations().map(row=>({channel:row.channel,rootTs:row.root_ts,threadId:row.thread_id})), issues: store.issues() }, null, 2))
-    } else if (command === 'reply') {
-      const conversation = store.byThread(flag(args, '--thread-id'))
-      if (!conversation) throw new Error('This T3 thread has no Drebot Slack conversation')
-      const text = readFileSync(flag(args, '--file'), 'utf8')
-      const id = store.enqueue(conversation, text)
-      console.log(JSON.stringify({ queued: true, id, channel: conversation.channel, threadTs: conversation.root_ts }))
-    } else if (command === 'send') {
-      const channel = flag(args, '--channel'), rootTs = flag(args, '--thread-ts'), threadId = flag(args, '--t3-thread')
-      if (!config.channels?.[channel]) throw new Error('Channel is not a configured Drebot route')
-      const policy = JSON.parse(readFileSync(join(CONFIG, 'outward-send.json'), 'utf8'))
-      if (!policy.postChannels?.[channel] && !(rootTs && policy.replyChannels?.[channel])) throw new Error('Outward-send policy does not authorize this destination')
-      const text = readFileSync(flag(args, '--file'), 'utf8')
-      let conversation = rootTs ? store.bySlack(channel, rootTs) : null
-      if (conversation && threadId && conversation.thread_id !== threadId) throw new Error('This Slack thread is already linked to a different T3 thread')
+    if (command === "watch") {
+      await watch(config, store);
+      return;
+    }
+    if (command === "status") {
+      const auth = await slackApi("auth.test", {}, config.botToken);
+      let runtime = null;
+      try {
+        runtime = JSON.parse(NodeFS.readFileSync(RUNTIME_FILE, "utf8"));
+        process.kill(runtime.pid, 0);
+      } catch {
+        runtime = null;
+      }
+      const token = t3Token();
+      let t3Connected = false,
+        t3Error;
+      try {
+        await t3Dispatch("server.getConfig", {});
+        t3Connected = true;
+      } catch (error) {
+        t3Error = error.message;
+      }
+      console.log(
+        JSON.stringify(
+          {
+            appId: config.appId,
+            botUserId: auth.user_id,
+            teamId: auth.team_id,
+            runtime,
+            t3Credential: {
+              configured: !!token,
+              connected: t3Connected,
+              error: t3Error,
+              expired: token?.expired,
+              expiresAt: token?.expiresAt,
+            },
+            channels: Object.keys(config.channels || {}),
+            conversations: store.conversations().map((row) => ({
+              channel: row.channel,
+              rootTs: row.root_ts,
+              threadId: row.thread_id,
+            })),
+            issues: store.issues(),
+          },
+          null,
+          2,
+        ),
+      );
+    } else if (command === "reply") {
+      const conversation = store.byThread(flag(args, "--thread-id"));
+      if (!conversation) throw new Error("This T3 thread has no Drebot Slack conversation");
+      const text = NodeFS.readFileSync(flag(args, "--file"), "utf8");
+      const id = store.enqueue(conversation, text);
+      console.log(
+        JSON.stringify({
+          queued: true,
+          id,
+          channel: conversation.channel,
+          threadTs: conversation.root_ts,
+        }),
+      );
+    } else if (command === "send") {
+      const channel = flag(args, "--channel"),
+        rootTs = flag(args, "--thread-ts"),
+        threadId = flag(args, "--t3-thread");
+      if (!config.channels?.[channel]) throw new Error("Channel is not a configured Drebot route");
+      const policy = JSON.parse(
+        NodeFS.readFileSync(NodePath.join(CONFIG, "outward-send.json"), "utf8"),
+      );
+      if (!policy.postChannels?.[channel] && !(rootTs && policy.replyChannels?.[channel]))
+        throw new Error("Outward-send policy does not authorize this destination");
+      const text = NodeFS.readFileSync(flag(args, "--file"), "utf8");
+      let conversation = rootTs ? store.bySlack(channel, rootTs) : null;
+      if (conversation && threadId && conversation.thread_id !== threadId)
+        throw new Error("This Slack thread is already linked to a different T3 thread");
       if (threadId && !conversation) {
-        if (store.byThread(threadId)) throw new Error('This T3 thread is already linked to another Slack conversation')
-        await t3Dispatch('orchestration.getThreadProjection', { threadId })
+        if (store.byThread(threadId))
+          throw new Error("This T3 thread is already linked to another Slack conversation");
+        await t3Dispatch("orchestration.getThreadProjection", { threadId });
       }
       if (rootTs) {
-        conversation ||= store.register({ id: `${config.teamId}:${channel}:${rootTs}`, channel, rootTs, ...(threadId && { threadId }), route: config.channels[channel], launched: !!threadId })
-        const id = store.enqueue(conversation, text)
-        console.log(JSON.stringify({ queued: true, id, channel, threadTs: rootTs }))
+        conversation ||= store.register({
+          id: `${config.teamId}:${channel}:${rootTs}`,
+          channel,
+          rootTs,
+          ...(threadId && { threadId }),
+          route: config.channels[channel],
+          launched: !!threadId,
+        });
+        const id = store.enqueue(conversation, text);
+        console.log(JSON.stringify({ queued: true, id, channel, threadTs: rootTs }));
       } else {
-        conversation = store.register({ id: `${config.teamId}:${channel}:outgoing:${randomUUID()}`, channel, rootTs: '', ...(threadId && { threadId }), route: config.channels[channel], launched: !!threadId })
-        const id = store.enqueue(conversation, text)
-        console.log(JSON.stringify({ queued: true, id, channel }))
+        conversation = store.register({
+          id: `${config.teamId}:${channel}:outgoing:${NodeCrypto.randomUUID()}`,
+          channel,
+          rootTs: "",
+          ...(threadId && { threadId }),
+          route: config.channels[channel],
+          launched: !!threadId,
+        });
+        const id = store.enqueue(conversation, text);
+        console.log(JSON.stringify({ queued: true, id, channel }));
       }
-    } else if (command === 'retry') {
-      const id = flag(args, '--event')
-      const result = store.db.prepare("UPDATE inbox SET status='pending',attempts=0,next_attempt=0,error=NULL WHERE id=? AND status='error'").run(id)
-      if (!result.changes) throw new Error('No failed inbound event with that ID')
-      console.log(`Queued retry of ${id}; the T3 command and message IDs are unchanged`)
-    } else throw new Error(`Unknown Drebot command: ${command}`)
-  } finally { if (command !== 'watch') store.close() }
+    } else if (command === "retry") {
+      const id = flag(args, "--event");
+      const result = store.db
+        .prepare(
+          "UPDATE inbox SET status='pending',attempts=0,next_attempt=0,error=NULL WHERE id=? AND status='error'",
+        )
+        .run(id);
+      if (!result.changes) throw new Error("No failed inbound event with that ID");
+      console.log(`Queued retry of ${id}; the T3 command and message IDs are unchanged`);
+    } else throw new Error(`Unknown Drebot command: ${command}`);
+  } finally {
+    if (command !== "watch") store.close();
+  }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runDrebot(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1 })
+if (
+  process.argv[1] &&
+  NodePath.resolve(process.argv[1]) === NodeURL.fileURLToPath(import.meta.url)
+) {
+  runDrebot(process.argv.slice(2)).catch((error) => {
+    console.error(error.message);
+    process.exitCode = 1;
+  });
 }

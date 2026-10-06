@@ -61,6 +61,9 @@ Channel routes use the same shape, with `listen: "mentions"` or `listen: "all"`.
 thread accepts later replies without another mention. Each route can override `allowedUsers`;
 `["*"]` explicitly permits all human workspace members in that route. Keep DMs owner-only unless
 you intend to grant others access to agents running on your machine.
+Restart the listener after configuration changes. Current route authorization also applies to
+existing mapped conversations; their project and model binding stays fixed. Slack Connect events
+and events identifying a sender from another team are refused.
 
 Choose a registered project, a live model and effort, workspace strategy, and runtime mode explicitly.
 Use `{ "type": "worktree", "baseRef": "main", "startFromOrigin": true }` for isolated code work.
@@ -95,6 +98,8 @@ node scripts/drebot/cli.mjs send --channel <channel-id> --thread-ts <parent-ts> 
 to one Slack thread. Destinations must be configured routes and authorized by the existing private
 `config/outward-send.json` policy. Commands report queued acceptance; `status` reports delivery issues.
 An agent that already queued its final milestone returns `DREBOT_NO_REPLY` to suppress automatic relay.
+Later delegated-task, background, PR-watch and restart continuations must explicitly use `reply`;
+their answers are not automatically relayed. Coding inbox turns wait for their launched code threads.
 
 Check `status` for actual Slack identity, T3 authentication, listener freshness, mappings, waiting
 threads, recovery failures, and quarantined sends. T3 dispatch errors retry with stable command IDs.
@@ -103,10 +108,12 @@ After fixing a persistent dispatch error, use `retry --event <event-id>`.
 Slack writes with an unknown outcome are quarantined rather than retried. Inspect the Slack thread
 before deciding to send again. Explicit rate limits honor Retry-After.
 
-Recovery polls mapped active threads and recent roots, with a default 24-hour lookback for newly
-mentioned unlinked threads. Set `recoveryWindowSeconds` to expand that window. Messages before
+Recovery polls active mapped threads and linked threads with activity in the last 30 days, plus
+recent roots with a 24-hour lookback for newly mentioned unlinked threads.
+Set `mappedRecoveryWindowSeconds` and `recoveryWindowSeconds` to expand those windows. Messages before
 activation or before a thread was linked are not replayed as new work. A new mention in an older,
 unlinked root while the bridge is offline can fall outside this bounded recovery window.
+An offline follow-up in a linked thread last active over 30 days ago can also fall outside it.
 
 ## Verify changes
 
