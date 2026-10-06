@@ -69,20 +69,37 @@ export function readDrebotConfig(file = CONFIG_FILE) {
 
 function takeLock() {
   const id = NodeCrypto.randomUUID();
+  let bootId;
+  try {
+    bootId = NodeFS.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
   if (NodeFS.existsSync(LOCK_FILE)) {
     const previous = JSON.parse(NodeFS.readFileSync(LOCK_FILE, "utf8"));
     let alive = false;
-    try {
-      process.kill(previous.pid, 0);
-      alive = true;
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
+    if (
+      previous.pid !== process.pid &&
+      !(bootId && previous.bootId && bootId !== previous.bootId)
+    ) {
+      try {
+        process.kill(previous.pid, 0);
+        alive = true;
+      } catch (error) {
+        if (error.code !== "ESRCH")
+          throw new Error(
+            "Drebot cannot verify the existing lock owner; inspect it before restarting",
+            {
+              cause: error,
+            },
+          );
+      }
     }
     if (alive) throw new Error(`Drebot is already running as PID ${previous.pid}`);
     NodeFS.unlinkSync(LOCK_FILE);
   }
   const fd = NodeFS.openSync(LOCK_FILE, "wx", 0o600);
-  NodeFS.writeFileSync(fd, JSON.stringify({ id, pid: process.pid }));
+  NodeFS.writeFileSync(fd, JSON.stringify({ id, pid: process.pid, bootId }));
   NodeFS.closeSync(fd);
   return () => {
     if (JSON.parse(NodeFS.readFileSync(LOCK_FILE, "utf8")).id === id) NodeFS.unlinkSync(LOCK_FILE);
@@ -90,7 +107,14 @@ function takeLock() {
 }
 
 /** Recover missed messages without advancing past an incomplete channel sweep. */
-export async function catchUp(config, store, ingest, api = slackApi, { fullMapped = true } = {}) {
+export async function catchUp(
+  config,
+  store,
+  ingest,
+  api = slackApi,
+  { fullMapped = true, signal, startedAt = String(Date.now() / 1000) } = {},
+) {
+  signal?.throwIfAborted();
   const recovery = `recovery:${fullMapped ? "full" : "fast"}`;
   const channels = new Set(Object.keys(config.channels || {}));
   if (config.allowDms) {
@@ -100,21 +124,29 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
         { types: "im", exclude_archived: true },
         config.botToken,
         api,
+        undefined,
+        signal,
       ))
         if (channel.user === config.ownerUserId) channels.add(channel.id);
+      signal?.throwIfAborted();
       store.health(`${recovery}:discovery`, "");
       if (fullMapped) store.health("recovery:discovery", "");
     } catch (error) {
+      signal?.throwIfAborted();
       store.health(`${recovery}:discovery`, error.message);
     }
     for (const channel of store.dmChannels(config.ownerUserId)) channels.add(channel);
   }
   const failures = [];
   for (const channel of channels) {
+    signal?.throwIfAborted();
     try {
-      const since = store.cursor(`history:${channel}`, config.activatedAt);
+      const { history: since, mapped: mappedSince } = store.initializeRecovery(
+        channel,
+        config.activatedAt,
+        startedAt,
+      );
       // Fast history polling must not move past replies in threads reserved for the slower sweep.
-      const mappedSince = store.cursor(`mapped:${channel}`, config.activatedAt);
       const through = String(Date.now() / 1000);
       const window = Number(config.recoveryWindowSeconds) || 86400;
       const mappedWindow = Number(config.mappedRecoveryWindowSeconds) || 30 * 86400;
@@ -126,7 +158,10 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
         { channel, oldest, latest: through },
         config.botToken,
         api,
+        undefined,
+        signal,
       );
+      signal?.throwIfAborted();
       const roots = new Set(
         messages
           .filter(
@@ -137,12 +172,15 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
       );
       for (const message of messages
         .filter((row) => Number(row.ts) >= Number(since))
-        .sort((a, b) => Number(a.ts) - Number(b.ts)))
+        .sort((a, b) => Number(a.ts) - Number(b.ts))) {
+        signal?.throwIfAborted();
         ingest({
           team_id: config.teamId,
           event: { ...message, channel, channel_type: channel.startsWith("D") ? "im" : "channel" },
         });
+      }
       for (const conversation of store.conversations().filter((row) => row.channel === channel)) {
+        signal?.throwIfAborted();
         if (
           conversation.root_ts &&
           ((conversation.launched && conversation.watching) ||
@@ -152,8 +190,15 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
           roots.add(conversation.root_ts);
       }
       for (const root of roots) {
+        signal?.throwIfAborted();
         const linked = store.bySlack(channel, root);
         const healthId = `recovery:root:${channel}:${root}`;
+        const oldestReply = String(
+          Math.max(
+            Number(fullMapped && linked ? mappedSince : since),
+            Number(linked?.start_ts || 0),
+          ),
+        );
         let replies;
         try {
           replies = await slackPages(
@@ -161,19 +206,18 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
             {
               channel,
               ts: root,
-              oldest: String(
-                Math.max(
-                  Number(fullMapped && linked ? mappedSince : since),
-                  Number(linked?.start_ts || 0),
-                ),
-              ),
+              oldest: oldestReply,
               latest: through,
             },
             config.botToken,
             api,
+            undefined,
+            signal,
           );
+          signal?.throwIfAborted();
           store.health(healthId, "");
         } catch (error) {
+          signal?.throwIfAborted();
           if (
             !error.refused ||
             error.message !== "Slack refused conversations.replies: thread_not_found"
@@ -182,7 +226,10 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
           store.health(healthId, error.message);
           continue;
         }
-        for (const reply of replies.sort((a, b) => Number(a.ts) - Number(b.ts)))
+        for (const reply of replies
+          .filter((row) => Number(row.ts) >= Number(oldestReply))
+          .sort((a, b) => Number(a.ts) - Number(b.ts))) {
+          signal?.throwIfAborted();
           ingest({
             team_id: config.teamId,
             event: {
@@ -192,16 +239,20 @@ export async function catchUp(config, store, ingest, api = slackApi, { fullMappe
               channel_type: channel.startsWith("D") ? "im" : "channel",
             },
           });
+        }
       }
+      signal?.throwIfAborted();
       store.setCursor(`history:${channel}`, through);
       if (fullMapped) store.setCursor(`mapped:${channel}`, through);
       store.health(`${recovery}:${channel}`, "");
       if (fullMapped) store.health(`recovery:${channel}`, "");
     } catch (error) {
+      signal?.throwIfAborted();
       store.health(`${recovery}:${channel}`, error.message);
       failures.push({ channel, error: error.message });
     }
   }
+  signal?.throwIfAborted();
   if (fullMapped && !failures.length) store.health("recovery", "");
   return failures;
 }
@@ -226,6 +277,8 @@ export async function bridgeTick(config, store, rpc, api, cli = CLI, logger = lo
 
 async function watch(config, store) {
   const release = takeLock();
+  const startedAt = String(Date.now() / 1000);
+  const recoveryStop = new AbortController();
   let socket,
     timer,
     reconnectTimer,
@@ -263,6 +316,14 @@ async function watch(config, store) {
       { mode: 0o600 },
     );
   const ingest = (payload) => {
+    const event = payload.event;
+    if (
+      payload.team_id === config.teamId &&
+      event?.user === config.ownerUserId &&
+      event.channel &&
+      (config.channels?.[event.channel] || (config.allowDms && event.channel.startsWith("D")))
+    )
+      store.initializeRecovery(event.channel, config.activatedAt, startedAt);
     const routed = routeEvent(payload, config, store);
     if (!routed) return;
     const result = store.record(routed.event, routed.route, config.teamId);
@@ -274,9 +335,17 @@ async function watch(config, store) {
     fullMapped = fullRecoveryPending;
     fullRecoveryPending = false;
     recovering = true;
-    track(catchUp(config, store, ingest, slackApi, { fullMapped }))
+    track(
+      catchUp(config, store, ingest, slackApi, {
+        fullMapped,
+        startedAt,
+        signal: recoveryStop.signal,
+      }),
+    )
       .then(() => store.health(`recovery:${fullMapped ? "full" : "fast"}`, ""))
-      .catch((error) => store.health(`recovery:${fullMapped ? "full" : "fast"}`, error.message))
+      .catch((error) => {
+        if (!stopping) store.health(`recovery:${fullMapped ? "full" : "fast"}`, error.message);
+      })
       .finally(() => {
         recovering = false;
         recoveredAt = Date.now();
@@ -363,6 +432,7 @@ async function watch(config, store) {
   const stop = () => {
     if (stopping) return;
     stopping = true;
+    recoveryStop.abort();
     clearTimeout(timer);
     clearTimeout(reconnectTimer);
     socket?.close();
@@ -373,6 +443,8 @@ async function watch(config, store) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   try {
+    for (const channel of Object.keys(config.channels || {}))
+      store.initializeRecovery(channel, config.activatedAt, startedAt);
     const auth = await slackApi("auth.test", {}, config.botToken);
     if (auth.team_id !== config.teamId || auth.user_id !== config.botUserId)
       throw new Error("Slack bot identity does not match Drebot configuration");

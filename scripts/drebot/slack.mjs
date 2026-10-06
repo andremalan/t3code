@@ -1,5 +1,5 @@
 /** Distinguish Slack refusals, rate limits and transport failures with unknown write outcomes. */
-export async function slackApi(method, params, token, fetchImpl = fetch) {
+export async function slackApi(method, params, token, fetchImpl = fetch, { signal } = {}) {
   const body = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
     if (value != null)
@@ -14,7 +14,9 @@ export async function slackApi(method, params, token, fetchImpl = fetch) {
         "content-type": "application/x-www-form-urlencoded",
       },
       body,
-      signal: AbortSignal.timeout(20000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(20000)])
+        : AbortSignal.timeout(20000),
     });
   } catch {
     throw new Error("Slack transport failed; outcome unknown");
@@ -38,29 +40,55 @@ export async function slackApi(method, params, token, fetchImpl = fetch) {
   return result;
 }
 
-/** Require complete pagination and honor explicit rate limits before returning recovered rows. */
+function pauseForRateLimit(ms, signal) {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Require complete pagination; cancellation interrupts reads and rate-limit waits. */
 export async function slackPages(
   method,
   params,
   token,
   api = slackApi,
-  pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pause = pauseForRateLimit,
+  signal,
 ) {
   const rows = [];
   let cursor = "";
   const seen = new Set();
   do {
+    signal?.throwIfAborted();
     if (seen.has(cursor) || seen.size >= 100)
       throw new Error(`Slack pagination did not finish: ${method}`);
     seen.add(cursor);
     let result;
     for (let attempt = 0; ; attempt++) {
       try {
-        result = await api(method, { ...params, limit: 200, ...(cursor && { cursor }) }, token);
+        signal?.throwIfAborted();
+        result = await api(
+          method,
+          { ...params, limit: 200, ...(cursor && { cursor }) },
+          token,
+          undefined,
+          { signal },
+        );
+        signal?.throwIfAborted();
         break;
       } catch (error) {
+        signal?.throwIfAborted();
         if (!error.retryAfter || attempt >= 3) throw error;
-        await pause(error.retryAfter * 1000);
+        await pause(error.retryAfter * 1000, signal);
       }
     }
     rows.push(...(result.messages || result.channels || []));

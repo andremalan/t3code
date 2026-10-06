@@ -30,18 +30,16 @@ this fork also has `scripts/hq-linux.sh` for its checkout build. There is no con
 app-start hook for arbitrary sidecars; `runOnWorktreeCreate` prepares individual worktrees.
 
 Create `~/.config/systemd/user/drebot.service`, replacing the Node and checkout paths with their
-absolute Linux paths. Pin Node 24, and choose the actual T3 origin and a private state directory:
+absolute Linux paths. Pin Node 24, choose a private state directory, and set the actual T3 origin
+in private configuration's `t3Url` so service, terminal and agent commands use the same environment:
 
 ```ini
 [Unit]
 Description=Drebot Slack bridge
-Wants=network-online.target
-After=network-online.target
 
 [Service]
 WorkingDirectory=%h
 Environment=DREBOT_STATE=%h/.local/share/drebot
-Environment=DREBOT_T3_URL=http://127.0.0.1:3773
 ExecStart=/absolute/path/to/node24 /absolute/path/to/t3code/scripts/drebot/cli.mjs watch
 Restart=on-failure
 RestartSec=10
@@ -74,7 +72,15 @@ Enable lingering with `loginctl enable-linger "$USER"` if the service should run
 Stop with `systemctl --user stop drebot.service`; inspect status with `systemctl --user status drebot.service`.
 On migration, stop the Mac listener before starting Linux. Use fresh bridge state unless the
 corresponding T3 thread IDs were also migrated; copying mappings alone cannot restore their threads.
+Fresh state and newly added channels begin intake when the listener starts seeing them. Older
+requests and messages sent during a migration gap are not recovered automatically; ask Drebot again.
 This service supervises transport; it does not provide coworker worker isolation.
+
+Shutdown cancels recovery reads and rate-limit waits, then drains accepted work. Linux locks record
+the boot identity so a stale PID from a previous boot can be reclaimed. A legacy lock without that
+identity can still block startup if its PID was reused. If startup reports an existing or unverified
+lock owner, stop supervision, inspect that process and the state directory, and archive the lock only
+after verifying that no listener owns it. An unverified live lock is preserved.
 
 ## Configure
 
@@ -93,6 +99,7 @@ Save `config/drebot.json` under the private state directory with mode 0600. An e
   "ownerUserId": "UOWNER123",
   "botToken": "xoxb-replace-me",
   "appToken": "xapp-replace-me",
+  "t3Url": "http://127.0.0.1:3773",
   "activatedAt": "1791300000",
   "allowedUsers": ["UOWNER123"],
   "allowDms": true,
@@ -104,7 +111,7 @@ Save `config/drebot.json` under the private state directory with mode 0600. An e
       "options": [{ "id": "reasoningEffort", "value": "xhigh" }]
     },
     "workspaceStrategy": { "type": "root" },
-    "runtimeMode": "auto-accept-edits",
+    "runtimeMode": "full-access",
     "prompt": "Read the installed drebot skill and handle this request."
   },
   "channels": {}
@@ -121,7 +128,10 @@ and events identifying a sender from another team are refused.
 
 Choose a registered project, a live model and effort, workspace strategy, and runtime mode explicitly.
 Use `{ "type": "worktree", "baseRef": "main", "startFromOrigin": true }` for a fresh coding worktree.
-Approval requests stay in T3; Drebot tells the requester when a run is waiting there.
+The owner-only bridge uses `full-access` so workflow replies can write message files and the private
+queue outside a coding worktree. More restrictive modes require T3 approvals for that reply path;
+server-started continuations are not automatically relayed to Slack while awaiting approval.
+Repository rules and existing outward-send guards remain authoritative in either mode.
 
 Coworker repository questions, coding threads and draft PRs require a separate worker environment
 containing fresh clones of committed repository contents and its own task changes. Keep the owner's
@@ -172,6 +182,8 @@ Explicit command refusals wait for inspection; after fixing one, use `retry --ev
 Slack writes with an unknown outcome are quarantined rather than retried. Inspect the Slack thread
 before deciding to send again. Explicit rate limits honor Retry-After.
 
+Each channel's initial intake boundary is persisted before its first history request. Recovery
+preserves that boundary on failures and uses saved cursors on later restarts.
 Recovery checks channel history every minute and polls active T3 threads plus linked threads with
 activity in the last 24 hours. Startup, Socket Mode reconnects, and a sweep every 30 minutes also
 check linked threads with activity in the last 30 days. Activity includes accepted human messages

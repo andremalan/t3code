@@ -424,6 +424,10 @@ NodeTest.test(
     );
     NodeAssert.deepEqual(waits, [2000]);
     const store = fixture(t);
+    for (const channel of ["C123", "C456"]) {
+      store.setCursor(`history:${channel}`, "1");
+      store.setCursor(`mapped:${channel}`, "1");
+    }
     const ingested = [];
     await catchUp(
       { ...config, allowDms: false, channels: { C123: route, C456: route } },
@@ -444,6 +448,8 @@ NodeTest.test(
   "offline mentions in recently active unlinked threads are recovered without their older replies",
   async (t) => {
     const store = fixture(t);
+    store.setCursor("history:C123", "5");
+    store.setCursor("mapped:C123", "5");
     const cfg = { ...config, allowDms: false };
     const ingested = [];
     await catchUp(
@@ -461,6 +467,7 @@ NodeTest.test(
           method === "conversations.history"
             ? [{ ...event, text: "not for bot", reply_count: 2, latest_reply: "10" }]
             : [
+                { ...event, text: "<@U123> old request" },
                 { ...event, ts: "3", text: "side note" },
                 { ...event, ts: "10" },
               ],
@@ -468,6 +475,150 @@ NodeTest.test(
     );
     NodeAssert.deepEqual(ingested, ["10"]);
     NodeAssert.equal(store.conversations()[0].start_ts, "10");
+  },
+);
+
+NodeTest.test(
+  "fresh recovery rejects old history and Socket Mode deliveries without launching work",
+  async (t) => {
+    const store = fixture(t);
+    t.mock.method(Date, "now", () => 1000000);
+    const cfg = { ...config, allowDms: false };
+    const old = { ...event, ts: "999", reply_count: 1, latest_reply: "999" };
+    await catchUp(
+      cfg,
+      store,
+      (payload) => {
+        const routed = routeEvent(payload, cfg, store);
+        if (routed) store.record(routed.event, routed.route, cfg.teamId);
+      },
+      async () => ({ messages: [old] }),
+    );
+    NodeAssert.equal(store.cursor("baseline:C123"), "1000");
+    NodeAssert.equal(store.cursor("history:C123"), "1000");
+    NodeAssert.equal(store.cursor("mapped:C123"), "1000");
+    NodeAssert.equal(routeEvent({ team_id: cfg.teamId, event: old }, cfg, store), null);
+    const calls = [];
+    await bridgeTick(
+      cfg,
+      store,
+      async (...args) => calls.push(args),
+      async (...args) => calls.push(args),
+    );
+    NodeAssert.equal(store.pending().length, 0);
+    NodeAssert.equal(store.conversations().length, 0);
+    NodeAssert.equal(store.pendingPosts().length, 0);
+    NodeAssert.equal(calls.length, 0);
+  },
+);
+
+NodeTest.test(
+  "a newly configured channel starts now while existing channels recover their outage",
+  async (t) => {
+    const store = fixture(t);
+    t.mock.method(Date, "now", () => 1000000);
+    store.setCursor("history:C123", "800");
+    store.setCursor("mapped:C123", "700");
+    const cfg = { ...config, allowDms: false, channels: { C123: route, CNEW: route } };
+    await catchUp(
+      cfg,
+      store,
+      (payload) => {
+        const routed = routeEvent(payload, cfg, store);
+        if (routed) store.record(routed.event, routed.route, cfg.teamId);
+      },
+      async (method, { channel }) => ({
+        messages:
+          method === "conversations.history"
+            ? [{ ...event, channel, ts: channel === "C123" ? "900" : "500" }]
+            : [],
+      }),
+    );
+    NodeAssert.deepEqual(
+      store.pending().map((row) => JSON.parse(row.event).channel),
+      ["C123"],
+    );
+    NodeAssert.equal(store.cursor("baseline:C123"), config.activatedAt);
+    NodeAssert.equal(store.cursor("baseline:CNEW"), "1000");
+    NodeAssert.equal(store.cursor("history:CNEW"), "1000");
+    NodeAssert.equal(store.cursor("mapped:CNEW"), "1000");
+  },
+);
+
+NodeTest.test("a failed first read persists its baseline across a restarted store", async (t) => {
+  const store = fixture(t);
+  let now = 1000;
+  t.mock.method(Date, "now", () => now * 1000);
+  const cfg = { ...config, allowDms: false };
+  await catchUp(
+    cfg,
+    store,
+    () => {},
+    async () => {
+      NodeAssert.equal(store.cursor("history:C123"), "1000");
+      NodeAssert.equal(store.cursor("mapped:C123"), "1000");
+      throw new Error("offline");
+    },
+  );
+  const reopened = new BridgeStore(store.db.location());
+  t.after(() => reopened.close());
+  now = 1100;
+  const ingested = [];
+  await catchUp(
+    cfg,
+    reopened,
+    (payload) => ingested.push(payload.event.ts),
+    async (method) => ({
+      messages: method === "conversations.history" ? [{ ...event, ts: "1050" }, event] : [],
+    }),
+  );
+  NodeAssert.deepEqual(ingested, ["1050"]);
+  NodeAssert.equal(reopened.cursor("baseline:C123"), "1000");
+});
+
+NodeTest.test(
+  "Socket intake retains the startup boundary despite transit delay and later recovery",
+  (t) => {
+    const store = fixture(t);
+    store.initializeRecovery("D123", config.activatedAt, "1000");
+    store.setCursor("history:D123", "1100");
+    const owner = { ...event, channel: "D123", channel_type: "im", ts: "1001" };
+    NodeAssert.ok(routeEvent({ team_id: config.teamId, event: owner }, config, store));
+    NodeAssert.equal(
+      routeEvent({ team_id: config.teamId, event: { ...owner, ts: "999" } }, config, store),
+      null,
+    );
+    NodeAssert.equal(
+      routeEvent({ team_id: config.teamId, event: { ...owner, user: "UCOWORKER" } }, config, store),
+      null,
+    );
+  },
+);
+
+NodeTest.test(
+  "cancelled recovery holds saved cursors and reports the abort reason without health errors",
+  async (t) => {
+    const store = fixture(t);
+    store.setCursor("history:C123", "1");
+    store.setCursor("mapped:C123", "1");
+    const controller = new AbortController();
+    const reason = new Error("stopping");
+    await NodeAssert.rejects(
+      catchUp(
+        { ...config, allowDms: false },
+        store,
+        () => {},
+        async (method) => {
+          if (method === "conversations.replies") controller.abort(reason);
+          return { messages: [{ ...event, reply_count: 1, latest_reply: "3" }] };
+        },
+        { signal: controller.signal },
+      ),
+      (error) => error === reason,
+    );
+    NodeAssert.equal(store.cursor("history:C123"), "1");
+    NodeAssert.equal(store.cursor("mapped:C123"), "1");
+    NodeAssert.equal(store.issues().health.length, 0);
   },
 );
 

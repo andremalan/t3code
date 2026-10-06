@@ -6,6 +6,28 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import { BridgeStore } from "./bridge.mjs";
 
+const fixtureConfig = () => ({
+  teamId: "TTEST",
+  botUserId: "UBOT",
+  ownerUserId: "UOWNER",
+  botToken: "xoxb-fixture",
+  appToken: "xapp-fixture",
+  activatedAt: "1",
+  allowedUsers: ["UOWNER"],
+  allowDms: true,
+  defaultRoute: {
+    projectId: "project",
+    modelSelection: {
+      instanceId: "codex",
+      model: "gpt-6.1-sol",
+      options: [{ id: "reasoningEffort", value: "xhigh" }],
+    },
+    workspaceStrategy: { type: "root" },
+    runtimeMode: "full-access",
+  },
+  channels: {},
+});
+
 NodeTest.test(
   "an agent's pinned reply reaches the service state despite a different environment",
   (t) => {
@@ -13,28 +35,8 @@ NodeTest.test(
     t.after(() => NodeFS.rmSync(scratch, { recursive: true, force: true }));
     const state = NodePath.join(scratch, "service's state");
     const otherState = NodePath.join(scratch, "agent-state");
-    const route = {
-      projectId: "project",
-      modelSelection: {
-        instanceId: "codex",
-        model: "gpt-6.1-sol",
-        options: [{ id: "reasoningEffort", value: "xhigh" }],
-      },
-      workspaceStrategy: { type: "root" },
-      runtimeMode: "auto-accept-edits",
-    };
-    const config = {
-      teamId: "TTEST",
-      botUserId: "UBOT",
-      ownerUserId: "UOWNER",
-      botToken: "xoxb-fixture",
-      appToken: "xapp-fixture",
-      activatedAt: "1",
-      allowedUsers: ["UOWNER"],
-      allowDms: true,
-      defaultRoute: route,
-      channels: {},
-    };
+    const config = fixtureConfig();
+    const route = config.defaultRoute;
     let threadId;
     for (const directory of [state, otherState]) {
       NodeFS.mkdirSync(NodePath.join(directory, "config"), { recursive: true });
@@ -94,3 +96,79 @@ NodeTest.test(
     }
   },
 );
+
+NodeTest.test(
+  "watch reclaims proven stale locks while preserving an unverified live owner",
+  (t) => {
+    const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "drebot-lock-"));
+    t.after(() => NodeFS.rmSync(scratch, { recursive: true, force: true }));
+    for (const mode of [
+      "self",
+      "live",
+      "eperm",
+      ...(NodeFS.existsSync("/proc/sys/kernel/random/boot_id") ? ["previous-boot"] : []),
+    ]) {
+      const state = NodePath.join(scratch, mode);
+      NodeFS.mkdirSync(NodePath.join(state, "config"), { recursive: true });
+      NodeFS.writeFileSync(
+        NodePath.join(state, "config/drebot.json"),
+        JSON.stringify(fixtureConfig()),
+      );
+      const source = `
+      import fs from 'node:fs';
+      const lock = ${JSON.stringify(NodePath.join(state, "drebot.lock"))};
+      fs.writeFileSync(lock, JSON.stringify({ id: 'old', pid: ${mode === "self" ? "process.pid" : process.pid}, bootId: ${mode === "previous-boot" ? "'previous-boot'" : "undefined"} }));
+      if (${JSON.stringify(mode)} === 'eperm') process.kill = () => { throw Object.assign(new Error('fixture'), {code: 'EPERM'}); };
+      let networkAttempted = false;
+      globalThis.fetch = async () => { networkAttempted = true; throw new Error('fixture network disabled'); };
+      const { runDrebot } = await import(${JSON.stringify(new URL("./cli.mjs", import.meta.url).href)});
+      let error;
+      try { await runDrebot(['watch']); } catch (e) { error = e.message; }
+      console.log(JSON.stringify({ error, networkAttempted, lockRemaining: fs.existsSync(lock) }));
+    `;
+      const result = JSON.parse(
+        NodeChildProcess.execFileSync(process.execPath, ["--input-type=module", "-e", source], {
+          env: { ...process.env, DREBOT_STATE: state },
+          encoding: "utf8",
+        }),
+      );
+      const stale = mode === "self" || mode === "previous-boot";
+      NodeAssert.equal(result.networkAttempted, stale, mode);
+      NodeAssert.equal(result.lockRemaining, !stale, mode);
+      NodeAssert.match(
+        result.error,
+        stale
+          ? /Slack transport failed/
+          : mode === "eperm"
+            ? /inspect it before restarting/
+            : /already running/,
+      );
+    }
+  },
+);
+
+NodeTest.test("recovery cancellation interrupts a rate-limit wait before retrying", async () => {
+  const { slackPages } = await import("./slack.mjs");
+  const controller = new AbortController();
+  let calls = 0;
+  let entered;
+  const rateLimited = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const recovered = slackPages(
+    "conversations.history",
+    {},
+    "fixture",
+    async () => {
+      calls++;
+      entered();
+      throw Object.assign(new Error("fixture rate limit"), { retryAfter: 3600 });
+    },
+    undefined,
+    controller.signal,
+  );
+  await rateLimited;
+  controller.abort();
+  await NodeAssert.rejects(recovered, { name: "AbortError" });
+  NodeAssert.equal(calls, 1);
+});

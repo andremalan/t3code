@@ -120,6 +120,37 @@ export class BridgeStore {
   cursor(id, fallback) {
     return this.db.prepare("SELECT ts FROM cursors WHERE id=?").get(id)?.ts || fallback;
   }
+  /** Persist a first-seen boundary while retaining saved recovery progress. */
+  initializeRecovery(channel, activatedAt, startedAt = String(Date.now() / 1000)) {
+    const history = this.cursor(`history:${channel}`);
+    const mapped = this.cursor(`mapped:${channel}`);
+    const existing = [history, mapped].filter((value) => value != null);
+    const firstSeen = existing.length ? activatedAt : startedAt;
+    const baseline = this.cursor(
+      `baseline:${channel}`,
+      String(Math.max(Number(activatedAt), Number(firstSeen))),
+    );
+    const initial = String(
+      Math.max(
+        Number(activatedAt),
+        existing.length ? Math.min(...existing.map(Number)) : Number(baseline),
+      ),
+    );
+    this.db
+      .prepare("INSERT OR IGNORE INTO cursors VALUES (?,?),(?,?),(?,?)")
+      .run(
+        `baseline:${channel}`,
+        baseline,
+        `history:${channel}`,
+        initial,
+        `mapped:${channel}`,
+        initial,
+      );
+    return {
+      history: String(Math.max(Number(activatedAt), Number(history || initial))),
+      mapped: String(Math.max(Number(activatedAt), Number(mapped || initial))),
+    };
+  }
   setCursor(id, ts) {
     this.db
       .prepare("INSERT INTO cursors VALUES (?,?) ON CONFLICT(id) DO UPDATE SET ts=excluded.ts")
@@ -271,7 +302,14 @@ export function routeEvent(payload, config, store) {
     (event.subtype && event.subtype !== "file_share" && event.subtype !== "thread_broadcast")
   )
     return null;
-  if (Number(event.ts) < Number(config.activatedAt)) return null;
+  if (
+    Number(event.ts) <
+    Math.max(
+      Number(config.activatedAt),
+      Number(store.cursor(`baseline:${event.channel}`, config.activatedAt)),
+    )
+  )
+    return null;
   if (event.user_team && event.user_team !== config.teamId) return null;
   const conversation = store.bySlack(event.channel, event.thread_ts || event.ts);
   if (conversation && Number(event.ts) < Number(conversation.start_ts)) return null;
@@ -283,8 +321,7 @@ export function routeEvent(payload, config, store) {
     : config.channels?.[event.channel];
   if (!current) return null;
   const allowed = current.allowedUsers || config.allowedUsers;
-  if (!Array.isArray(allowed) || (!allowed.includes("*") && !allowed.includes(event.user)))
-    return null;
+  if (!Array.isArray(allowed) || !allowed.includes(event.user)) return null;
   const route = conversation
     ? { ...JSON.parse(conversation.route), prompt: current.prompt }
     : current;
