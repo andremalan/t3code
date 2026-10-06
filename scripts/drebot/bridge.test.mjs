@@ -12,7 +12,7 @@ import {
   routeEvent,
   stableId,
 } from "./bridge.mjs";
-import { bridgeTick, catchUp } from "./cli.mjs";
+import { bridgeTick, catchUp, readDrebotConfig } from "./cli.mjs";
 import { pairingCode } from "./t3.mjs";
 import { slackPages } from "./slack.mjs";
 
@@ -271,23 +271,44 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("only explicitly allowed requesters can start agent work", (t) => {
-  const store = fixture(t);
-  NodeAssert.equal(
-    routeEvent(
-      {
-        team_id: config.teamId,
-        event: { ...event, user: "USTRANGER", channel: "D123", channel_type: "im" },
-      },
-      config,
-      store,
-    ),
-    null,
-  );
-  const shared = { ...config, channels: { C123: { ...route, allowedUsers: ["*"] } } };
-  NodeAssert.ok(
-    routeEvent({ team_id: config.teamId, event: { ...event, user: "USTRANGER" } }, shared, store),
-  );
+NodeTest.test(
+  "the personal bridge rejects coworkers even with an accidentally broad route",
+  (t) => {
+    const store = fixture(t);
+    NodeAssert.equal(
+      routeEvent(
+        {
+          team_id: config.teamId,
+          event: { ...event, user: "USTRANGER", channel: "D123", channel_type: "im" },
+        },
+        config,
+        store,
+      ),
+      null,
+    );
+    const shared = { ...config, channels: { C123: { ...route, allowedUsers: ["*"] } } };
+    NodeAssert.equal(
+      routeEvent({ team_id: config.teamId, event: { ...event, user: "USTRANGER" } }, shared, store),
+      null,
+    );
+    NodeAssert.ok(routeEvent({ team_id: config.teamId, event }, config, store));
+  },
+);
+
+NodeTest.test("startup refuses nonowner allowlists before using personal credentials", (t) => {
+  const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "drebot-policy-"));
+  t.after(() => NodeFS.rmSync(dir, { recursive: true, force: true }));
+  const file = NodePath.join(dir, "config.json");
+  const valid = { ...config, botToken: "xoxb-test", appToken: "xapp-test" };
+  NodeFS.writeFileSync(file, JSON.stringify(valid));
+  NodeAssert.equal(readDrebotConfig(file).ownerUserId, config.ownerUserId);
+  for (const invalid of [
+    { ...valid, allowedUsers: ["*"] },
+    { ...valid, channels: { C123: { ...route, allowedUsers: ["USTRANGER"] } } },
+  ]) {
+    NodeFS.writeFileSync(file, JSON.stringify(invalid));
+    NodeAssert.throws(() => readDrebotConfig(file), /coworkers require an isolated worker/);
+  }
 });
 
 NodeTest.test(
@@ -579,6 +600,194 @@ NodeTest.test("quiet mapped threads recover a recent reply after a short outage"
 });
 
 NodeTest.test(
+  "fast recovery skips idle mapped threads and keeps watching and recent threads",
+  async (t) => {
+    const store = fixture(t);
+    const now = Date.now() / 1000;
+    for (let i = 0; i < 100; i++)
+      store.register({
+        id: `idle:${i}`,
+        channel: "D123",
+        rootTs: String(now - (i + 2) * 1000 - 86400),
+        startTs: String(now - (i + 2) * 1000 - 86400),
+        route,
+      });
+    const watching = store.register({
+      id: "watching",
+      channel: "C123",
+      rootTs: String(now - 40 * 86400),
+      startTs: String(now - 40 * 86400),
+      route,
+    });
+    const recent = store.register({
+      id: "recent",
+      channel: "C123",
+      rootTs: String(now - 3600),
+      startTs: String(now - 3600),
+      route,
+    });
+    store.db.prepare("UPDATE conversations SET watching=0 WHERE id!=?").run(watching.id);
+    const calls = [];
+    await catchUp(
+      config,
+      store,
+      () => {},
+      async (method, params) => {
+        calls.push({ method, ...params });
+        return method === "conversations.list" ? { channels: [{ id: "D123" }] } : { messages: [] };
+      },
+      { fullMapped: false },
+    );
+    NodeAssert.equal(calls.filter((row) => row.method === "conversations.history").length, 2);
+    NodeAssert.deepEqual(
+      calls
+        .filter((row) => row.method === "conversations.replies")
+        .map((row) => row.ts)
+        .sort(),
+      [watching.root_ts, recent.root_ts].sort(),
+    );
+  },
+);
+
+NodeTest.test(
+  "fast recovery leaves older mapped replies available to the full sweep",
+  async (t) => {
+    const store = fixture(t);
+    const now = Date.now() / 1000;
+    const root = String(now - 3 * 86400);
+    const recorded = store.record({ ...event, ts: root }, route, config.teamId);
+    store.db
+      .prepare("UPDATE conversations SET watching=0 WHERE id=?")
+      .run(recorded.conversation.id);
+    const mappedSince = String(now - 600);
+    store.setCursor("mapped:C123", mappedSince);
+    store.setCursor("history:C123", mappedSince);
+    const cfg = { ...config, allowDms: false };
+    await catchUp(
+      cfg,
+      store,
+      () => {},
+      async () => ({ messages: [] }),
+      { fullMapped: false },
+    );
+    NodeAssert.equal(store.cursor("mapped:C123"), mappedSince);
+    NodeAssert.ok(Number(store.cursor("history:C123")) > now - 300);
+    const ingested = [];
+    const reply = { ...event, ts: String(now - 300), thread_ts: root };
+    const failing = await catchUp(
+      cfg,
+      store,
+      () => {},
+      async (method) => {
+        if (method === "conversations.replies") throw new Error("offline");
+        return { messages: [] };
+      },
+    );
+    NodeAssert.equal(failing.length, 1);
+    NodeAssert.equal(store.cursor("mapped:C123"), mappedSince);
+    await catchUp(
+      cfg,
+      store,
+      (payload) => ingested.push(payload.event),
+      async (method, params) => ({
+        messages:
+          method === "conversations.replies" && Number(reply.ts) >= Number(params.oldest)
+            ? [reply]
+            : [],
+      }),
+    );
+    NodeAssert.deepEqual(
+      ingested.map((row) => row.ts),
+      [reply.ts],
+    );
+    NodeAssert.ok(Number(store.cursor("mapped:C123")) > now - 300);
+  },
+);
+
+NodeTest.test("sent bot milestones count as activity while queued posts do not", async (t) => {
+  const store = fixture(t);
+  const now = Date.now() / 1000;
+  const conversations = ["five-days", "recent", "queued"].map((id, i) =>
+    store.register({
+      id,
+      channel: "C123",
+      rootTs: String(now - (40 + i) * 86400),
+      startTs: String(now - (40 + i) * 86400),
+      route,
+    }),
+  );
+  store.db.prepare("UPDATE conversations SET watching=0").run();
+  for (const conversation of conversations.slice(0, 2))
+    store.enqueue(conversation, "PR milestone", conversation.id);
+  await flushPosts(
+    store,
+    async (_method, params) => ({
+      ts: String(now - (params.thread_ts === conversations[0].root_ts ? 5 * 86400 : 3600)),
+    }),
+    config,
+  );
+  // Legacy sent rows may predate storing the Slack timestamp.
+  store.db
+    .prepare("UPDATE outbox SET slack_ts=NULL,created_at=? WHERE id=?")
+    .run(new Date((now - 5 * 86400) * 1000).toISOString(), conversations[0].id);
+  store.enqueue(conversations[2], "Unsent milestone");
+  const cfg = { ...config, allowDms: false };
+  const roots = [];
+  const api = async (method, params) => {
+    if (method === "conversations.replies") roots.push(params.ts);
+    return { messages: [] };
+  };
+  await catchUp(cfg, store, () => {}, api, { fullMapped: false });
+  NodeAssert.deepEqual(roots, [conversations[1].root_ts]);
+  roots.length = 0;
+  await catchUp(cfg, store, () => {}, api);
+  NodeAssert.deepEqual(
+    roots.sort(),
+    conversations
+      .slice(0, 2)
+      .map((row) => row.root_ts)
+      .sort(),
+  );
+});
+
+NodeTest.test(
+  "a command refusal after an outage delivers a distinct terminal notice",
+  async (t) => {
+    const store = fixture(t);
+    store.record(event, route, config.teamId);
+    for (let attempt = 0; attempt < 5; attempt++) {
+      store.db.prepare("UPDATE inbox SET next_attempt=0").run();
+      await dispatchPending(
+        store,
+        async () => {
+          throw new Error("T3 offline");
+        },
+        "drebot",
+      );
+    }
+    const posted = [];
+    const api = async (_method, params) => {
+      posted.push(params.text);
+      return { ts: String(posted.length) };
+    };
+    await flushPosts(store, api, config);
+    NodeAssert.match(posted[0], /waiting and will resume/);
+    store.db.prepare("UPDATE inbox SET next_attempt=0").run();
+    await dispatchPending(
+      store,
+      async () => {
+        throw Object.assign(new Error("refused"), { refused: true });
+      },
+      "drebot",
+    );
+    await flushPosts(store, api, config);
+    NodeAssert.equal(posted.length, 2);
+    NodeAssert.match(posted[1], /T3 refused this request/);
+    NodeAssert.equal(store.issues().inbox[0].status, "error");
+  },
+);
+
+NodeTest.test(
   "transient T3 downtime remains retriable while explicit command refusal is quarantined",
   async (t) => {
     const store = fixture(t);
@@ -616,7 +825,15 @@ NodeTest.test("attributed and punctuated no-reply sentinels suppress duplicate p
   const recorded = store.record(event, route, config.teamId);
   store.dispatched(store.pending()[0]);
   const conversation = store.conversation(recorded.conversation.id);
-  const finals = ["🤖 AI: Directed\n\nDREBOT_NO_REPLY", "`DREBOT_NO_REPLY`", "DREBOT_NO_REPLY."];
+  const finals = [
+    "🤖 AI: Directed\n\nDREBOT_NO_REPLY",
+    "`DREBOT_NO_REPLY`",
+    "DREBOT_NO_REPLY.",
+    "**DREBOT_NO_REPLY**",
+    "_DREBOT_NO_REPLY_",
+    "DREBOT_NO_REPLY\n\nQueued the PR milestone through reply; internal note.",
+    "🤖 AI: Directed\n\n**DREBOT_NO_REPLY**\n\nPrivate continuation details.",
+  ];
   collectReplies(store, conversation, {
     runs: finals.map((_, i) => ({
       id: String(i),
@@ -627,4 +844,21 @@ NodeTest.test("attributed and punctuated no-reply sentinels suppress duplicate p
   });
   NodeAssert.equal(store.pendingPosts().length, 0);
   NodeAssert.match(eventPrompt(event, conversation, route, "drebot"), /later delegated-task/);
+  collectReplies(store, conversation, {
+    runs: [
+      {
+        id: "ordinary",
+        status: "completed",
+        userMessageId: stableId(`message:${recorded.eventId}`),
+      },
+    ],
+    messages: [
+      {
+        role: "assistant",
+        runId: "ordinary",
+        text: "The answer includes DREBOT_NO_REPLY as an example.\nDREBOT_NO_REPLY",
+      },
+    ],
+  });
+  NodeAssert.equal(store.pendingPosts().length, 1);
 });

@@ -90,6 +90,19 @@ export class BridgeStore {
   conversations() {
     return this.db.prepare("SELECT * FROM conversations").all();
   }
+  lastActivity(conversation) {
+    const inbound = this.db
+      .prepare(
+        "SELECT MAX(CAST(json_extract(event,'$.ts') AS REAL)) AS ts FROM inbox WHERE conversation_id=?",
+      )
+      .get(conversation.id);
+    const sent = this.db
+      .prepare(
+        "SELECT MAX(COALESCE(CAST(NULLIF(slack_ts,'') AS REAL),unixepoch(created_at,'subsec'))) AS ts FROM outbox WHERE conversation_id=? AND status='sent'",
+      )
+      .get(conversation.id);
+    return Math.max(Number(conversation.start_ts), Number(inbound?.ts || 0), Number(sent?.ts || 0));
+  }
   cursor(id, fallback) {
     return this.db.prepare("SELECT ts FROM cursors WHERE id=?").get(id)?.ts || fallback;
   }
@@ -197,7 +210,7 @@ export class BridgeStore {
         error.refused
           ? "🤖 AI: Autonomous\n\nT3 refused this request. Andre can inspect Drebot’s status before retrying."
           : "🤖 AI: Autonomous\n\nT3 is unavailable. This message is waiting and will resume when the connection is restored.",
-        `failed:${row.id}`,
+        `${error.refused ? "refused" : "failed"}:${row.id}`,
       );
   }
   enqueue(conversation, text, id = NodeCrypto.randomUUID()) {
@@ -235,6 +248,8 @@ export function routeEvent(payload, config, store) {
     !event.channel
   )
     return null;
+  // This adapter connects to Andre's personal environment. Coworkers need a separate worker.
+  if (!config.ownerUserId || event.user !== config.ownerUserId) return null;
   if (
     event.bot_id ||
     event.user === config.botUserId ||
@@ -413,10 +428,12 @@ export function collectReplies(store, conversation, projection) {
 }
 
 export function isNoReply(text) {
-  const bare = String(text)
+  const first = String(text)
     .trim()
-    .replace(/^(?:🤖|:robot_face:) AI: (?:Directed|Autonomous)\s*/u, "");
-  return /^[`'"]*DREBOT_NO_REPLY[`'".!\s]*$/.test(bare);
+    .replace(/^(?:🤖|:robot_face:) AI: (?:Directed|Autonomous)\s*/u, "")
+    .split(/\r?\n/)
+    .find((line) => line.trim());
+  return /^[`'"*_\s]*DREBOT_NO_REPLY[`'"*_.!\s]*$/.test(first || "");
 }
 
 export async function flushPosts(store, api, config, log = () => {}) {

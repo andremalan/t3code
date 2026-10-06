@@ -31,6 +31,10 @@ export function readDrebotConfig(file = CONFIG_FILE) {
     !config.allowedUsers.length
   )
     throw new Error("Drebot requires an ownerUserId and an explicit allowedUsers list");
+  if (config.allowedUsers.some((user) => user !== config.ownerUserId))
+    throw new Error(
+      "The personal Drebot bridge admits only its owner; coworkers require an isolated worker",
+    );
   for (const route of [
     ...(config.allowDms ? [config.defaultRoute] : []),
     ...Object.values(config.channels || {}),
@@ -53,6 +57,10 @@ export function readDrebotConfig(file = CONFIG_FILE) {
     )
       throw new Error(
         `Each Drebot route needs explicit project, model, effort, workspace, runtimeMode, and allowedUsers in ${file}`,
+      );
+    if (allowed.some((user) => user !== config.ownerUserId))
+      throw new Error(
+        "The personal Drebot bridge admits only its owner; coworkers require an isolated worker",
       );
   }
   return config;
@@ -80,7 +88,7 @@ function takeLock() {
   };
 }
 
-export async function catchUp(config, store, ingest, api = slackApi) {
+export async function catchUp(config, store, ingest, api = slackApi, { fullMapped = true } = {}) {
   const channels = new Set(Object.keys(config.channels || {}));
   if (config.allowDms) {
     try {
@@ -102,6 +110,8 @@ export async function catchUp(config, store, ingest, api = slackApi) {
   for (const channel of channels) {
     try {
       const since = store.cursor(`history:${channel}`, config.activatedAt);
+      // Fast history polling must not move past replies in threads reserved for the slower sweep.
+      const mappedSince = store.cursor(`mapped:${channel}`, config.activatedAt);
       const through = String(Date.now() / 1000);
       const window = Number(config.recoveryWindowSeconds) || 86400;
       const mappedWindow = Number(config.mappedRecoveryWindowSeconds) || 30 * 86400;
@@ -130,14 +140,11 @@ export async function catchUp(config, store, ingest, api = slackApi) {
           event: { ...message, channel, channel_type: channel.startsWith("D") ? "im" : "channel" },
         });
       for (const conversation of store.conversations().filter((row) => row.channel === channel)) {
-        const last = store.db
-          .prepare("SELECT event FROM inbox WHERE conversation_id=? ORDER BY rowid DESC LIMIT 1")
-          .get(conversation.id);
         if (
           conversation.root_ts &&
           (conversation.watching ||
-            Number(last ? JSON.parse(last.event).ts : conversation.start_ts) >
-              Number(through) - mappedWindow)
+            store.lastActivity(conversation) >
+              Number(through) - (fullMapped ? mappedWindow : window))
         )
           roots.add(conversation.root_ts);
       }
@@ -148,7 +155,12 @@ export async function catchUp(config, store, ingest, api = slackApi) {
           {
             channel,
             ts: root,
-            oldest: String(Math.max(Number(since), Number(linked?.start_ts || 0))),
+            oldest: String(
+              Math.max(
+                Number(fullMapped && linked ? mappedSince : since),
+                Number(linked?.start_ts || 0),
+              ),
+            ),
             latest: through,
           },
           config.botToken,
@@ -166,6 +178,7 @@ export async function catchUp(config, store, ingest, api = slackApi) {
           });
       }
       store.setCursor(`history:${channel}`, through);
+      if (fullMapped) store.setCursor(`mapped:${channel}`, through);
       store.health(`recovery:${channel}`, "");
     } catch (error) {
       store.health(`recovery:${channel}`, error.message);
@@ -202,7 +215,9 @@ async function watch(config, store) {
     backoff = 1000,
     connected = false,
     recovering = false,
-    recoveredAt = 0;
+    fullRecoveryPending = false,
+    recoveredAt = 0,
+    mappedRecoveredAt = 0;
   const pending = new Set();
   const track = (promise) => {
     pending.add(promise);
@@ -234,14 +249,19 @@ async function watch(config, store) {
     const result = store.record(routed.event, routed.route, config.teamId);
     if (result.inserted) log(`Recorded Slack message ${result.eventId}`);
   };
-  const recover = () => {
+  const recover = (fullMapped = false) => {
+    fullRecoveryPending ||= fullMapped;
     if (recovering || stopping) return;
+    fullMapped = fullRecoveryPending;
+    fullRecoveryPending = false;
     recovering = true;
-    track(catchUp(config, store, ingest))
+    track(catchUp(config, store, ingest, slackApi, { fullMapped }))
       .catch((error) => store.health("recovery", error.message))
       .finally(() => {
         recovering = false;
         recoveredAt = Date.now();
+        if (fullMapped) mappedRecoveredAt = recoveredAt;
+        if (fullRecoveryPending && !stopping) recover();
       });
   };
   const tick = () =>
@@ -251,7 +271,9 @@ async function watch(config, store) {
         busy = true;
         try {
           await bridgeTick(config, store, t3Dispatch, slackApi);
-          if (Date.now() - recoveredAt > 60000) recover();
+          const now = Date.now();
+          const fullMapped = now - mappedRecoveredAt >= 30 * 60000;
+          if (!recovering && (fullMapped || now - recoveredAt >= 60000)) recover(fullMapped);
           runtime();
         } catch (error) {
           log(`Bridge check failed: ${error.message}`);
@@ -279,7 +301,7 @@ async function watch(config, store) {
             backoff = 1000;
             runtime();
             log("Drebot Socket Mode connected");
-            recover();
+            recover(true);
           });
           connection.addEventListener("message", ({ data }) => {
             let envelope;
