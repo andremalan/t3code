@@ -14,7 +14,7 @@ import {
 } from "./bridge.mjs";
 import { bridgeTick, catchUp, readDrebotConfig } from "./cli.mjs";
 import { pairingCode } from "./t3.mjs";
-import { slackPages } from "./slack.mjs";
+import { slackApi, slackPages } from "./slack.mjs";
 
 const route = {
   projectId: "project",
@@ -242,6 +242,7 @@ NodeTest.test(
   async (t) => {
     const store = fixture(t);
     store.record(event, route, config.teamId);
+    store.dispatched(store.pending()[0]);
     store.setCursor("history:C123", "2");
     const cfg = { ...config, allowDms: false };
     NodeAssert.match(
@@ -618,6 +619,7 @@ NodeTest.test(
       rootTs: String(now - 40 * 86400),
       startTs: String(now - 40 * 86400),
       route,
+      launched: true,
     });
     const recent = store.register({
       id: "recent",
@@ -634,7 +636,9 @@ NodeTest.test(
       () => {},
       async (method, params) => {
         calls.push({ method, ...params });
-        return method === "conversations.list" ? { channels: [{ id: "D123" }] } : { messages: [] };
+        return method === "conversations.list"
+          ? { channels: [{ id: "D123", user: config.ownerUserId }] }
+          : { messages: [] };
       },
       { fullMapped: false },
     );
@@ -685,6 +689,24 @@ NodeTest.test(
     );
     NodeAssert.equal(failing.length, 1);
     NodeAssert.equal(store.cursor("mapped:C123"), mappedSince);
+    const failedHistory = store.cursor("history:C123");
+    NodeAssert.deepEqual(
+      store.issues().health.map((row) => row.id),
+      ["recovery:full:C123"],
+    );
+    await catchUp(
+      cfg,
+      store,
+      () => {},
+      async () => ({ messages: [] }),
+      { fullMapped: false },
+    );
+    NodeAssert.equal(store.cursor("mapped:C123"), mappedSince);
+    NodeAssert.ok(Number(store.cursor("history:C123")) >= Number(failedHistory));
+    NodeAssert.deepEqual(
+      store.issues().health.map((row) => row.id),
+      ["recovery:full:C123"],
+    );
     await catchUp(
       cfg,
       store,
@@ -701,6 +723,139 @@ NodeTest.test(
       [reply.ts],
     );
     NodeAssert.ok(Number(store.cursor("mapped:C123")) > now - 300);
+    NodeAssert.equal(store.issues().health.length, 0);
+  },
+);
+
+NodeTest.test(
+  "deleted roots stay visible without blocking other roots or recovery cursors",
+  async (t) => {
+    const store = fixture(t);
+    const now = Date.now() / 1000;
+    const conversations = ["deleted", "recent", "quiet"].map((id, i) =>
+      store.register({
+        id,
+        channel: "C123",
+        rootTs: String(now - (i === 2 ? 4 * 86400 : (i + 1) * 3600)),
+        startTs: String(now - (i === 2 ? 4 * 86400 : (i + 1) * 3600)),
+        route,
+        launched: true,
+      }),
+    );
+    store.db.prepare("UPDATE conversations SET watching=0").run();
+    const since = String(now - 600);
+    store.setCursor("history:C123", since);
+    store.setCursor("mapped:C123", since);
+    const ingested = [];
+    const api = (method, params) =>
+      slackApi(method, params, "test", async () =>
+        Response.json(
+          method === "conversations.replies" && params.ts === conversations[0].root_ts
+            ? { ok: false, error: "thread_not_found" }
+            : {
+                ok: true,
+                messages:
+                  method === "conversations.replies"
+                    ? [{ ...event, ts: String(now - 300), thread_ts: params.ts }]
+                    : [],
+              },
+        ),
+      );
+    const cfg = { ...config, allowDms: false };
+    NodeAssert.deepEqual(
+      await catchUp(cfg, store, (payload) => ingested.push(payload.event), api),
+      [],
+    );
+    NodeAssert.deepEqual(
+      ingested.map((row) => row.thread_ts),
+      conversations.slice(1).map((row) => row.root_ts),
+    );
+    NodeAssert.ok(Number(store.cursor("history:C123")) > Number(since));
+    NodeAssert.ok(Number(store.cursor("mapped:C123")) > Number(since));
+    const healthId = `recovery:root:C123:${conversations[0].root_ts}`;
+    NodeAssert.deepEqual(
+      store.issues().health.map((row) => row.id),
+      [healthId],
+    );
+    NodeAssert.match(store.issues().health[0].error, /thread_not_found/);
+    await catchUp(cfg, store, () => {}, api, { fullMapped: false });
+    NodeAssert.deepEqual(
+      store.issues().health.map((row) => row.id),
+      [healthId],
+    );
+  },
+);
+
+NodeTest.test("an unconfirmed thread-not-found failure holds channel cursors", async (t) => {
+  const store = fixture(t);
+  const now = Date.now() / 1000;
+  store.register({
+    id: "root",
+    channel: "C123",
+    rootTs: String(now - 3600),
+    startTs: String(now - 3600),
+    route,
+    launched: true,
+  });
+  const since = String(now - 600);
+  store.setCursor("history:C123", since);
+  store.setCursor("mapped:C123", since);
+  const failure = await catchUp(
+    { ...config, allowDms: false },
+    store,
+    () => {},
+    async (method) => {
+      if (method === "conversations.replies")
+        throw new Error("Slack refused conversations.replies: thread_not_found");
+      return { messages: [] };
+    },
+  );
+  NodeAssert.equal(failure.length, 1);
+  NodeAssert.equal(store.cursor("history:C123"), since);
+  NodeAssert.equal(store.cursor("mapped:C123"), since);
+  NodeAssert.deepEqual(
+    store.issues().health.map((row) => row.id),
+    ["recovery:full:C123"],
+  );
+});
+
+NodeTest.test(
+  "DM recovery discovers only the owner and retains verified owner mappings",
+  async (t) => {
+    const store = fixture(t);
+    store.record({ ...event, channel: "DOWNER" }, route, config.teamId);
+    store.record({ ...event, channel: "DCOWORKER", user: "UCOWORKER" }, route, config.teamId);
+    store.register({ id: "send-only", channel: "DSEND", rootTs: "3", route });
+    const histories = [];
+    const api = async (method, params) => {
+      if (method === "conversations.list")
+        return {
+          channels: [
+            { id: "DNEW", user: config.ownerUserId },
+            { id: "DCOWORKER", user: "UCOWORKER" },
+            { id: "DUNKNOWN" },
+          ],
+        };
+      if (method === "conversations.history") histories.push(params.channel);
+      return { messages: [] };
+    };
+    store.health("recovery:discovery", "legacy discovery failure");
+    store.health("recovery:C123", "legacy channel failure");
+    store.health("recovery", "legacy unexpected failure");
+    await catchUp(config, store, () => {}, api);
+    NodeAssert.deepEqual(histories.sort(), ["C123", "DNEW", "DOWNER"]);
+    NodeAssert.equal(store.issues().health.length, 0);
+    histories.length = 0;
+    await catchUp(
+      config,
+      store,
+      () => {},
+      async (method, params) => {
+        if (method === "conversations.list") throw new Error("offline");
+        return api(method, params);
+      },
+    );
+    NodeAssert.deepEqual(histories.sort(), ["C123", "DOWNER"]);
   },
 );
 
@@ -716,7 +871,6 @@ NodeTest.test("sent bot milestones count as activity while queued posts do not",
       route,
     }),
   );
-  store.db.prepare("UPDATE conversations SET watching=0").run();
   for (const conversation of conversations.slice(0, 2))
     store.enqueue(conversation, "PR milestone", conversation.id);
   await flushPosts(

@@ -62,6 +62,7 @@ export function t3Token() {
   return { ...record, expired };
 }
 
+/** Resolve bare codes and hosted pairing links to their intended backend. */
 export function pairingCode(input) {
   const raw = String(input || "").trim();
   const empty = { code: "", origin: "" };
@@ -127,7 +128,6 @@ function storeToken(record) {
       if (error.code !== "ENOENT") throw error;
     }
     if (previous !== undefined) {
-      // The default archive is ~/tmp/cc/archive/t3-tokens; state overrides keep tests isolated.
       const archive = NodePath.join(STATE, "archive", "t3-tokens");
       NodeFS.mkdirSync(archive, { recursive: true, mode: 0o700 });
       writePrivate(
@@ -138,7 +138,7 @@ function storeToken(record) {
     // The replacement is already 0600 when it becomes visible, including over an older loose file.
     NodeFS.renameSync(staged, T3_TOKEN_FILE);
   } catch (error) {
-    // A successful rename leaves no staged file. Cleanup must preserve the original storage error.
+    // Cleanup must preserve the original storage error.
     try {
       NodeFS.unlinkSync(staged);
     } catch {}

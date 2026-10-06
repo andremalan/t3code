@@ -1,4 +1,4 @@
-// Slack can refuse a request with HTTP 200. Writes with an unknown outcome are never replayed.
+/** Distinguish Slack refusals, rate limits and transport failures with unknown write outcomes. */
 export async function slackApi(method, params, token, fetchImpl = fetch) {
   const body = new URLSearchParams();
   for (const [key, value] of Object.entries(params)) {
@@ -38,6 +38,7 @@ export async function slackApi(method, params, token, fetchImpl = fetch) {
   return result;
 }
 
+/** Require complete pagination and honor explicit rate limits before returning recovered rows. */
 export async function slackPages(
   method,
   params,

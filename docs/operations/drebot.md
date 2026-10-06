@@ -19,7 +19,8 @@ For an interactive session, keep the listener in a visible terminal and stop it 
 recovers recent history on startup, but it does not run while the machine or terminal is off.
 
 Private configuration and conversation mappings live under `~/tmp/cc`. Set `DREBOT_STATE` to
-choose another directory. This default preserves the original HQ installation's credentials and
+choose another directory for every CLI invocation, including `pair` and `status`. Agent reply
+commands pin the listener's absolute state directory. This default preserves the original HQ installation's credentials and
 SQLite mappings during migration. Never commit this directory.
 
 ### Linux startup
@@ -51,9 +52,17 @@ UMask=0077
 WantedBy=default.target
 ```
 
-Put the private configuration in that state's `config` directory and pair with the Linux T3
-environment. The listener checks T3 before connecting, so restart supervision also handles a
-boot race with T3. Then run:
+Put the private configuration in that state's `config` directory. Use the same state when pairing
+and inspecting it from your terminal:
+
+```sh
+export DREBOT_STATE="$HOME/.local/share/drebot"
+/absolute/path/to/node24 /absolute/path/to/t3code/scripts/drebot/cli.mjs pair '<fresh-Linux-pairing-link>'
+/absolute/path/to/node24 /absolute/path/to/t3code/scripts/drebot/cli.mjs status
+```
+
+The listener checks T3 before connecting, so restart supervision also handles a boot race with T3.
+Then run:
 
 ```sh
 systemctl --user daemon-reload
@@ -111,7 +120,7 @@ existing mapped conversations; their project and model binding stays fixed. Slac
 and events identifying a sender from another team are refused.
 
 Choose a registered project, a live model and effort, workspace strategy, and runtime mode explicitly.
-Use `{ "type": "worktree", "baseRef": "main", "startFromOrigin": true }` for isolated code work.
+Use `{ "type": "worktree", "baseRef": "main", "startFromOrigin": true }` for a fresh coding worktree.
 Approval requests stay in T3; Drebot tells the requester when a run is waiting there.
 
 Coworker repository questions, coding threads and draft PRs require a separate worker environment
@@ -123,7 +132,8 @@ publishing path pass real acceptance checks.
 
 Reusable behavior belongs to the `drebot` and `drebot-drive-feedback` skills in Andre Skills.
 Route prompts should point to the installed skill. Bot identity, requester identity, and the pinned
-reply command are supplied by the bridge.
+reply command, including its private state directory, are supplied by the bridge. Preserve the
+whole pinned command in agent handoffs so replies reach the listener's queue.
 
 Pair once using a fresh link from T3's Connections settings:
 
@@ -162,12 +172,13 @@ Explicit command refusals wait for inspection; after fixing one, use `retry --ev
 Slack writes with an unknown outcome are quarantined rather than retried. Inspect the Slack thread
 before deciding to send again. Explicit rate limits honor Retry-After.
 
-Recovery checks channel history every minute and polls watched threads plus linked threads with
+Recovery checks channel history every minute and polls active T3 threads plus linked threads with
 activity in the last 24 hours. Startup, Socket Mode reconnects, and a sweep every 30 minutes also
 check linked threads with activity in the last 30 days. Activity includes accepted human messages
 and delivered bot milestones. Separate cursors preserve older-thread replies between full sweeps;
 a quiet linked thread can take up to 30 minutes to recover a missed reply while the listener stays
 connected. Recovery passes run one at a time, so rate limits can extend those intervals.
+Deleted thread roots remain visible in `status` without blocking recovery of other linked threads.
 Set `mappedRecoveryWindowSeconds` and `recoveryWindowSeconds` to expand the full-sweep and fast/history
 windows. Messages before activation or before a thread was linked are not replayed as new work.
 A new mention in an older, unlinked root while the bridge is offline can fall outside the history
