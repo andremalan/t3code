@@ -102,8 +102,8 @@ Later delegated-task, background, PR-watch and restart continuations must explic
 their answers are not automatically relayed. Coding inbox turns wait for their launched code threads.
 
 Check `status` for actual Slack identity, T3 authentication, listener freshness, mappings, waiting
-threads, recovery failures, and quarantined sends. T3 dispatch errors retry with stable command IDs.
-After fixing a persistent dispatch error, use `retry --event <event-id>`.
+threads, recovery failures, and quarantined sends. T3 transport outages retry with stable command IDs.
+Explicit command refusals wait for inspection; after fixing one, use `retry --event <event-id>`.
 
 Slack writes with an unknown outcome are quarantined rather than retried. Inspect the Slack thread
 before deciding to send again. Explicit rate limits honor Retry-After.
