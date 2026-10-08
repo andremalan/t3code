@@ -1,5 +1,18 @@
 # T3 Code
 
+## About this fork
+
+This fork of [T3 Code](https://github.com/pingdotgg/t3code) adds **rooms** for coordinating work across projects and agent threads. Each room has an outcome, a shared note about where things stand, and a shelf of deliverables.
+
+- **Rooms:** Group related threads across projects, see which are working or settled, and rename, reorder or archive rooms.
+- **Shared context:** People and agents can update the room's note with decisions and next steps. Revision checks prevent concurrent edits from silently overwriting each other.
+- **Shelves:** Keep files, links and linked pull requests with the room. Shelved files are copied into the room's storage so they outlive individual worktrees.
+- **Agent handoffs:** Replace a thread with a fresh agent, optionally using a different model, while carrying over its conversation and room notes. New top-level threads launched by an agent inherit its room.
+
+To run this fork, use the [development setup](./docs/operations/development.md) or the [Linux service helper](./scripts/hq-linux.sh), which builds this checkout and runs it under systemd. The installers and downloads below are for upstream T3 Code.
+
+---
+
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
 
 Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, and Google Antigravity. If they're set up on your computer, T3 Code can control them.
